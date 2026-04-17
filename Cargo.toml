@@ -25,6 +25,7 @@ embedded-graphics = "0.8"
 embedded-hal = "1.0"
 heapless = "0.8"
 profont = "0.7"
+u8g2-fonts = "0.7"
 esp32-nimble = "0.12"
 
 [build-dependencies]

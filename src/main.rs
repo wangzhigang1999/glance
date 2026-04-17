@@ -29,12 +29,18 @@ use esp_idf_svc::sys::link_patches;
 
 use crate::display::{Display, St7305};
 use crate::hw::battery::{Battery, PowerSource};
+use crate::hw::chip_temp::ChipTemp;
 use crate::hw::shtc3::Shtc3;
+use crate::hw::system::{mac_suffix, read_sys_stats};
 use crate::net::{
     format_local_date, format_local_hms, CredsStore, ProvStatus, Provisioner, Sntp, WifiCreds,
     WifiManager,
 };
 use crate::ui::AppState;
+
+const FW_VERSION: &str = env!("CARGO_PKG_VERSION");
+// ESP_IDF_VERSION 从 .cargo/config.toml [env] 注入
+const IDF_VERSION: &str = env!("ESP_IDF_VERSION");
 
 /// 中国时区 UTC+8
 const TZ_OFFSET_SECS: i64 = 8 * 3600;
@@ -86,6 +92,18 @@ fn main() -> anyhow::Result<()> {
     log::info!("Init battery ADC on GPIO4");
     let mut battery = Battery::new(peripherals.adc1, peripherals.pins.gpio4)?;
 
+    // ---- 芯片内置温度传感器 ----
+    log::info!("Init chip internal temp sensor");
+    let chip_temp = ChipTemp::new().ok();
+    if chip_temp.is_none() {
+        log::warn!("chip temp sensor init failed, will show N/A");
+    }
+
+    // ---- 静态身份信息(一次性算,进 state) ----
+    let fw_version: &'static str = FW_VERSION;
+    let idf_version: &'static str = IDF_VERSION.strip_prefix('v').unwrap_or(IDF_VERSION);
+    let mac = mac_suffix();
+
     // ---- NVS creds ----
     let creds_store = CredsStore::new(nvs.clone())?;
     let stored_creds = creds_store.load()?;
@@ -110,6 +128,9 @@ fn main() -> anyhow::Result<()> {
     state.wifi_ssid = creds.ssid.clone();
     state.ip_octets = Some(ip_info.ip.octets());
     state.prov_mode = false;
+    state.fw_version = fw_version;
+    state.idf_version = idf_version;
+    state.mac_suffix = mac.clone();
     let _ = ui::render(&mut display, &state);
     display.flush()?;
     log::info!("WiFi fully up, ssid={}, ip={}", creds.ssid, ip_info.ip);
@@ -143,7 +164,12 @@ fn main() -> anyhow::Result<()> {
         state.wifi_connected = wifi.is_connected();
         state.ip_octets = wifi.ip_info().map(|i| i.ip.octets());
         state.rssi = wifi.rssi();
-        state.clock_hms = format_local_hms(TZ_OFFSET_SECS);
+        state.clock_hm = format_local_hms(TZ_OFFSET_SECS).map(|s| {
+            // HH:MM:SS → HH:MM,去掉秒
+            let mut out: heapless::String<8> = heapless::String::new();
+            let _ = out.push_str(&s[..5.min(s.len())]);
+            out
+        });
         state.clock_date = format_local_date(TZ_OFFSET_SECS);
         state.battery = match battery.read() {
             Ok(PowerSource::Battery { mv, percent }) => Some((mv, percent)),
@@ -153,6 +179,16 @@ fn main() -> anyhow::Result<()> {
                 None
             }
         };
+        // 系统指标
+        let sys = read_sys_stats();
+        state.heap_free = sys.heap_free as u32;
+        state.heap_total = sys.heap_total as u32;
+        state.heap_min_ever = sys.heap_min_ever as u32;
+        state.psram_free = sys.psram_free as u32;
+        state.psram_total = sys.psram_total as u32;
+        state.stack_hwm_bytes = sys.main_stack_hwm_bytes;
+        state.reset_reason = sys.reset_reason;
+        state.chip_temp_c = chip_temp.as_ref().and_then(|c| c.read_celsius());
 
         let _ = ui::render(&mut display, &state);
         if let Err(e) = display.flush() {
