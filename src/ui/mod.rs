@@ -103,19 +103,20 @@ pub fn render(target: &mut Display<'_>, state: &AppState) -> Result<(), core::co
     .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
     .draw(target)?;
 
-    // 页脚左:时钟(同步后) + uptime + 采样计数
-    let mut footer_l: heapless::String<48> = heapless::String::new();
-    let up_m = (state.uptime_secs / 60) % 60;
-    let up_h = state.uptime_secs / 3600;
+    // 页脚左:时钟(同步后显示 HH:MM:SS;未同步回退 uptime)+ 采样计数
+    // 不要超过 ~18 字符 × 9px = 162px,否则和右边 WiFi 叠起来
+    let mut footer_l: heapless::String<32> = heapless::String::new();
     match &state.clock_hms {
         Some(hms) => {
-            let _ = write!(footer_l, "{hms}  up {:02}:{:02}  n={}", up_h, up_m, state.sample_count);
+            let _ = write!(footer_l, "{hms}  n={}", state.sample_count);
         }
         None => {
+            let up_h = state.uptime_secs / 3600;
+            let up_m = (state.uptime_secs / 60) % 60;
             let up_s = state.uptime_secs % 60;
             let _ = write!(
                 footer_l,
-                "--:--:--  up {:02}:{:02}:{:02}  n={}",
+                "up {:02}:{:02}:{:02}  n={}",
                 up_h, up_m, up_s, state.sample_count
             );
         }
