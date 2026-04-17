@@ -28,9 +28,11 @@ use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys::link_patches;
 
 use crate::display::{Display, St7305};
+use crate::hw::battery::{Battery, PowerSource};
 use crate::hw::shtc3::Shtc3;
 use crate::net::{
-    format_local_hms, CredsStore, ProvStatus, Provisioner, Sntp, WifiCreds, WifiManager,
+    format_local_date, format_local_hms, CredsStore, ProvStatus, Provisioner, Sntp, WifiCreds,
+    WifiManager,
 };
 use crate::ui::AppState;
 
@@ -80,6 +82,10 @@ fn main() -> anyhow::Result<()> {
         peripherals.pins.gpio14,
     )?;
 
+    // ---- Battery ADC(GPIO4)----
+    log::info!("Init battery ADC on GPIO4");
+    let mut battery = Battery::new(peripherals.adc1, peripherals.pins.gpio4)?;
+
     // ---- NVS creds ----
     let creds_store = CredsStore::new(nvs.clone())?;
     let stored_creds = creds_store.load()?;
@@ -101,6 +107,7 @@ fn main() -> anyhow::Result<()> {
         .ip_info()
         .ok_or_else(|| anyhow::anyhow!("wifi up but no IP"))?;
     state.wifi_connected = true;
+    state.wifi_ssid = creds.ssid.clone();
     state.ip_octets = Some(ip_info.ip.octets());
     state.prov_mode = false;
     let _ = ui::render(&mut display, &state);
@@ -135,7 +142,17 @@ fn main() -> anyhow::Result<()> {
         state.sample_count = n;
         state.wifi_connected = wifi.is_connected();
         state.ip_octets = wifi.ip_info().map(|i| i.ip.octets());
+        state.rssi = wifi.rssi();
         state.clock_hms = format_local_hms(TZ_OFFSET_SECS);
+        state.clock_date = format_local_date(TZ_OFFSET_SECS);
+        state.battery = match battery.read() {
+            Ok(PowerSource::Battery { mv, percent }) => Some((mv, percent)),
+            Ok(PowerSource::Usb) => None,
+            Err(e) => {
+                log::warn!("battery read failed: {e}");
+                None
+            }
+        };
 
         let _ = ui::render(&mut display, &state);
         if let Err(e) = display.flush() {

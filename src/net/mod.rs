@@ -13,5 +13,5 @@ pub mod wifi;
 pub use creds::CredsStore;
 pub use prov::{ProvStatus, Provisioner};
 pub use sntp::Sntp;
-pub use time::format_local_hms;
+pub use time::{format_local_date, format_local_hms};
 pub use wifi::{WifiCreds, WifiManager};
