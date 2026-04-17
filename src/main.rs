@@ -108,10 +108,10 @@ fn main() -> anyhow::Result<()> {
     log::info!("WiFi fully up, ssid={}, ip={}", creds.ssid, ip_info.ip);
 
     // ---- SNTP(非阻塞,后台同步) ----
-    let sntp = Sntp::start()?;
-    if sntp.wait_synced(Duration::from_secs(10)) {
-        state.clock_hms = format_local_hms(TZ_OFFSET_SECS);
-    }
+    // _sntp 必须保持在作用域内,否则 drop 会 sntp_stop() 终结对时
+    let _sntp = Sntp::start()?;
+    // 这里不阻塞,主循环里每次直接看 SystemTime 是否 > 2020 来判"是否已同步"
+    // 理由:sntp_get_sync_status 在 poll 周期内会从 COMPLETED 翻回 IN_PROGRESS,不稳定
 
     // ---- 主循环 ----
     let boot = Instant::now();
@@ -135,11 +135,7 @@ fn main() -> anyhow::Result<()> {
         state.sample_count = n;
         state.wifi_connected = wifi.is_connected();
         state.ip_octets = wifi.ip_info().map(|i| i.ip.octets());
-        state.clock_hms = if sntp.is_synced() {
-            format_local_hms(TZ_OFFSET_SECS)
-        } else {
-            None
-        };
+        state.clock_hms = format_local_hms(TZ_OFFSET_SECS);
 
         let _ = ui::render(&mut display, &state);
         if let Err(e) = display.flush() {
