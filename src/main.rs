@@ -27,8 +27,11 @@ use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys::link_patches;
 
+use esp_idf_svc::hal::gpio::AnyIOPin;
+
 use crate::display::{Display, St7305};
 use crate::hw::battery::{Battery, PowerSource};
+use crate::hw::button::Button;
 use crate::hw::chip_temp::ChipTemp;
 use crate::hw::shtc3::Shtc3;
 use crate::hw::system::{mac_suffix, read_sys_stats};
@@ -36,7 +39,7 @@ use crate::net::{
     format_local_date, format_local_hms, CredsStore, ProvStatus, Provisioner, Sntp, WifiCreds,
     WifiManager,
 };
-use crate::ui::AppState;
+use crate::ui::{AppState, Page};
 
 const FW_VERSION: &str = env!("CARGO_PKG_VERSION");
 // ESP_IDF_VERSION 从 .cargo/config.toml [env] 注入
@@ -77,7 +80,7 @@ fn main() -> anyhow::Result<()> {
     display.splash_flash(2)?;
 
     let mut state = AppState::default();
-    let _ = ui::render(&mut display, &state);
+    let _ = ui::render(&mut display, &state, Page::Dashboard);
     display.flush()?;
 
     // ---- SHTC3 ----
@@ -91,6 +94,10 @@ fn main() -> anyhow::Result<()> {
     // ---- Battery ADC(GPIO4)----
     log::info!("Init battery ADC on GPIO4");
     let mut battery = Battery::new(peripherals.adc1, peripherals.pins.gpio4)?;
+
+    // ---- KEY 按钮(GPIO18),用于切页 ----
+    log::info!("Init KEY button on GPIO18");
+    let mut button = Button::new(AnyIOPin::from(peripherals.pins.gpio18))?;
 
     // ---- 芯片内置温度传感器 ----
     log::info!("Init chip internal temp sensor");
@@ -131,7 +138,7 @@ fn main() -> anyhow::Result<()> {
     state.fw_version = fw_version;
     state.idf_version = idf_version;
     state.mac_suffix = mac.clone();
-    let _ = ui::render(&mut display, &state);
+    let _ = ui::render(&mut display, &state, Page::Dashboard);
     display.flush()?;
     log::info!("WiFi fully up, ssid={}, ip={}", creds.ssid, ip_info.ip);
 
@@ -142,60 +149,78 @@ fn main() -> anyhow::Result<()> {
     // 理由:sntp_get_sync_status 在 poll 周期内会从 COMPLETED 翻回 IN_PROGRESS,不稳定
 
     // ---- 主循环 ----
+    // 100ms tick:既给按钮扫描足够响应,又让重活(传感器+重绘)按 5s 节奏跑。
     let boot = Instant::now();
     let mut n: u32 = 0;
+    let mut page = Page::Dashboard;
+    let mut last_refresh = Instant::now() - Duration::from_secs(60);
+    let tick = Duration::from_millis(100);
+    const REFRESH_PERIOD: Duration = Duration::from_secs(5);
+
     loop {
-        n = n.saturating_add(1);
-        match sensor.read() {
-            Ok((t, rh)) => {
-                state.temperature_c = Some(t);
-                state.humidity_pct = Some(rh);
-                log::info!("#{n} T={t:.2}°C RH={rh:.2}%");
-            }
-            Err(e) => {
-                log::error!("SHTC3 read failed: {e}");
-                state.temperature_c = None;
-                state.humidity_pct = None;
-            }
-        }
-
-        state.uptime_secs = boot.elapsed().as_secs();
-        state.sample_count = n;
-        state.wifi_connected = wifi.is_connected();
-        state.ip_octets = wifi.ip_info().map(|i| i.ip.octets());
-        state.rssi = wifi.rssi();
-        state.clock_hm = format_local_hms(TZ_OFFSET_SECS).map(|s| {
-            // HH:MM:SS → HH:MM,去掉秒
-            let mut out: heapless::String<8> = heapless::String::new();
-            let _ = out.push_str(&s[..5.min(s.len())]);
-            out
-        });
-        state.clock_date = format_local_date(TZ_OFFSET_SECS);
-        state.battery = match battery.read() {
-            Ok(PowerSource::Battery { mv, percent }) => Some((mv, percent)),
-            Ok(PowerSource::Usb) => None,
-            Err(e) => {
-                log::warn!("battery read failed: {e}");
-                None
-            }
+        let page_changed = if button.poll_pressed() {
+            page = page.next();
+            log::info!("KEY pressed, switched to {:?}", page);
+            true
+        } else {
+            false
         };
-        // 系统指标
-        let sys = read_sys_stats();
-        state.heap_free = sys.heap_free as u32;
-        state.heap_total = sys.heap_total as u32;
-        state.heap_min_ever = sys.heap_min_ever as u32;
-        state.psram_free = sys.psram_free as u32;
-        state.psram_total = sys.psram_total as u32;
-        state.stack_hwm_bytes = sys.main_stack_hwm_bytes;
-        state.reset_reason = sys.reset_reason;
-        state.chip_temp_c = chip_temp.as_ref().and_then(|c| c.read_celsius());
 
-        let _ = ui::render(&mut display, &state);
-        if let Err(e) = display.flush() {
-            log::error!("Display flush failed: {e}");
+        let due = last_refresh.elapsed() >= REFRESH_PERIOD;
+        if page_changed || due {
+            if due {
+                n = n.saturating_add(1);
+                match sensor.read() {
+                    Ok((t, rh)) => {
+                        state.temperature_c = Some(t);
+                        state.humidity_pct = Some(rh);
+                        log::info!("#{n} T={t:.2}°C RH={rh:.2}%");
+                    }
+                    Err(e) => {
+                        log::error!("SHTC3 read failed: {e}");
+                        state.temperature_c = None;
+                        state.humidity_pct = None;
+                    }
+                }
+            }
+
+            state.uptime_secs = boot.elapsed().as_secs();
+            state.sample_count = n;
+            state.wifi_connected = wifi.is_connected();
+            state.ip_octets = wifi.ip_info().map(|i| i.ip.octets());
+            state.rssi = wifi.rssi();
+            state.clock_hm = format_local_hms(TZ_OFFSET_SECS).map(|s| {
+                let mut out: heapless::String<8> = heapless::String::new();
+                let _ = out.push_str(&s[..5.min(s.len())]);
+                out
+            });
+            state.clock_date = format_local_date(TZ_OFFSET_SECS);
+            state.battery = match battery.read() {
+                Ok(PowerSource::Battery { mv, percent }) => Some((mv, percent)),
+                Ok(PowerSource::Usb) => None,
+                Err(e) => {
+                    log::warn!("battery read failed: {e}");
+                    None
+                }
+            };
+            let sys = read_sys_stats();
+            state.heap_free = sys.heap_free as u32;
+            state.heap_total = sys.heap_total as u32;
+            state.heap_min_ever = sys.heap_min_ever as u32;
+            state.psram_free = sys.psram_free as u32;
+            state.psram_total = sys.psram_total as u32;
+            state.stack_hwm_bytes = sys.main_stack_hwm_bytes;
+            state.reset_reason = sys.reset_reason;
+            state.chip_temp_c = chip_temp.as_ref().and_then(|c| c.read_celsius());
+
+            let _ = ui::render(&mut display, &state, page);
+            if let Err(e) = display.flush() {
+                log::error!("Display flush failed: {e}");
+            }
+            last_refresh = Instant::now();
         }
 
-        sleep(Duration::from_secs(5));
+        sleep(tick);
     }
 }
 
@@ -214,7 +239,7 @@ fn obtain_creds(
         state.prov_mode = false;
         state.prov_hint.clear();
         let _ = state.prov_hint.push_str("connecting...");
-        let _ = ui::render(display, state);
+        let _ = ui::render(display, state, Page::Dashboard);
         let _ = display.flush();
 
         if try_connect_n(wifi, &creds, WIFI_RETRY_BUDGET) {
@@ -227,7 +252,7 @@ fn obtain_creds(
     state.prov_mode = true;
     state.prov_hint.clear();
     let _ = state.prov_hint.push_str(BLE_DEVICE_NAME);
-    let _ = ui::render(display, state);
+    let _ = ui::render(display, state, Page::Dashboard);
     let _ = display.flush();
 
     let prov = Provisioner::start(BLE_DEVICE_NAME)?;
@@ -241,7 +266,7 @@ fn obtain_creds(
         prov.publish_status(ProvStatus::Connecting);
         state.prov_hint.clear();
         let _ = write_owned(&mut state.prov_hint, "connecting ", &creds.ssid);
-        let _ = ui::render(display, state);
+        let _ = ui::render(display, state, Page::Dashboard);
         let _ = display.flush();
 
         if try_connect_n(wifi, &creds, WIFI_RETRY_BUDGET) {
@@ -262,7 +287,7 @@ fn obtain_creds(
         prov.publish_status(ProvStatus::Failed);
         state.prov_hint.clear();
         let _ = state.prov_hint.push_str("bad creds, retry");
-        let _ = ui::render(display, state);
+        let _ = ui::render(display, state, Page::Dashboard);
         let _ = display.flush();
     }
 }

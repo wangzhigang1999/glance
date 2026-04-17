@@ -81,7 +81,38 @@ const Y_SEP_CLOCK: i32 = 108;
 const Y_SEP_TH: i32 = 154;
 const Y_SEP_STATS: i32 = 232;
 
-pub fn render(target: &mut Display<'_>, state: &AppState) -> Result<(), core::convert::Infallible> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    Dashboard,
+    Github,
+}
+
+impl Page {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Dashboard => Self::Github,
+            Self::Github => Self::Dashboard,
+        }
+    }
+
+    pub const ALL: &'static [Page] = &[Page::Dashboard, Page::Github];
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|p| *p == self).unwrap_or(0)
+    }
+}
+
+impl Default for Page {
+    fn default() -> Self {
+        Page::Dashboard
+    }
+}
+
+pub fn render(
+    target: &mut Display<'_>,
+    state: &AppState,
+    page: Page,
+) -> Result<(), core::convert::Infallible> {
     target.clear(BinaryColor::Off)?;
 
     let tiny = MonoTextStyle::new(&FONT_9X18_BOLD, BinaryColor::On);
@@ -99,19 +130,62 @@ pub fn render(target: &mut Display<'_>, state: &AppState) -> Result<(), core::co
         return render_prov(target, state, &tiny, &header, &th_val);
     }
 
-    // 横向分隔线
+    match page {
+        Page::Dashboard => render_dashboard(target, state, &tiny, &micro, &th_val, &th_label)?,
+        Page::Github => render_github(target, state, &tiny, &micro, &header, &th_val)?,
+    }
+
+    // 页面指示点(右下角,不覆盖主内容)
+    draw_page_dots(target, page)?;
+
+    Ok(())
+}
+
+fn render_dashboard(
+    target: &mut Display<'_>,
+    state: &AppState,
+    tiny: &MonoTextStyle<'_, BinaryColor>,
+    micro: &MonoTextStyle<'_, BinaryColor>,
+    th_val: &MonoTextStyle<'_, BinaryColor>,
+    th_label: &MonoTextStyle<'_, BinaryColor>,
+) -> Result<(), core::convert::Infallible> {
     for y in [Y_SEP_TOP, Y_SEP_CLOCK, Y_SEP_TH, Y_SEP_STATS] {
         Line::new(Point::new(6, y), Point::new(WIDTH as i32 - 6, y))
             .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
             .draw(target)?;
     }
-
-    render_top_bar(target, state, &tiny)?;
+    render_top_bar(target, state, tiny)?;
     render_clock(target, state)?;
-    render_th(target, state, &th_val, &th_label)?;
-    render_stats(target, state, &tiny)?;
-    render_bottom_bar(target, state, &micro)?;
+    render_th(target, state, th_val, th_label)?;
+    render_stats(target, state, tiny)?;
+    render_bottom_bar(target, state, micro)?;
+    Ok(())
+}
 
+fn draw_page_dots(
+    target: &mut Display<'_>,
+    current: Page,
+) -> Result<(), core::convert::Infallible> {
+    // 右下角一排小圆点:● (当前) / ○ (其他)
+    let right = WIDTH as i32 - 8;
+    let bottom = HEIGHT as i32 - 8;
+    let spacing = 10i32;
+    let r = 3u32;
+    let cur_idx = current.index();
+    let n = Page::ALL.len() as i32;
+    for (i, _) in Page::ALL.iter().enumerate() {
+        let cx = right - (n - 1 - i as i32) * spacing;
+        let cy = bottom;
+        let top_left = Point::new(cx - r as i32, cy - r as i32);
+        let rect = Rectangle::new(top_left, Size::new(r * 2, r * 2));
+        if i == cur_idx {
+            rect.into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                .draw(target)?;
+        } else {
+            rect.into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+                .draw(target)?;
+        }
+    }
     Ok(())
 }
 
@@ -416,6 +490,119 @@ fn draw_wifi_bars(
                 .draw(target)?;
         }
     }
+    Ok(())
+}
+
+// ============================================================================
+// GitHub 页
+// ============================================================================
+
+/// 用户 GitHub 身份。目前硬编码,未来可从 NVS / build.rs 注入。
+pub const GITHUB_USER: &str = "iamzhigangwang";
+pub const FULL_NAME: &str = "Zhigang Wang";
+pub const EMAIL: &str = "wangzhigang1999@live.cn";
+pub const PROJECT_NAME: &str = "esp32-s3-rlcd";
+pub const PROJECT_DESC: &str = "ESP32-S3-RLCD-4.2 Rust firmware";
+
+fn render_github(
+    target: &mut Display<'_>,
+    state: &AppState,
+    tiny: &MonoTextStyle<'_, BinaryColor>,
+    micro: &MonoTextStyle<'_, BinaryColor>,
+    header: &MonoTextStyle<'_, BinaryColor>,
+    big: &MonoTextStyle<'_, BinaryColor>,
+) -> Result<(), core::convert::Infallible> {
+    let cx = WIDTH as i32 / 2;
+    let center = embedded_graphics::text::TextStyleBuilder::new()
+        .alignment(Alignment::Center)
+        .baseline(Baseline::Middle)
+        .build();
+
+    // 顶部大字 "GITHUB" + 装饰线
+    Line::new(Point::new(30, 36), Point::new(WIDTH as i32 - 30, 36))
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+        .draw(target)?;
+    Text::with_text_style("GITHUB", Point::new(cx, 24), *big, center).draw(target)?;
+    Line::new(Point::new(30, 38), Point::new(WIDTH as i32 - 30, 38))
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+        .draw(target)?;
+
+    // 用户名 + 全名(profont 24 / 18)
+    let mut uname: heapless::String<40> = heapless::String::new();
+    let _ = core::fmt::write(&mut uname, format_args!("@{}", GITHUB_USER));
+    Text::with_text_style(&uname, Point::new(cx, 72), *big, center).draw(target)?;
+    Text::with_text_style(FULL_NAME, Point::new(cx, 104), *header, center)
+        .draw(target)?;
+    Text::with_text_style(EMAIL, Point::new(cx, 126), *tiny, center).draw(target)?;
+
+    // 项目卡片(浅框)
+    let card_x = 24;
+    let card_y = 148;
+    let card_w = WIDTH as i32 - 48;
+    let card_h = 76;
+    Rectangle::new(
+        Point::new(card_x, card_y),
+        Size::new(card_w as u32, card_h as u32),
+    )
+    .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+    .draw(target)?;
+    // 标签横条
+    Rectangle::new(
+        Point::new(card_x, card_y),
+        Size::new(card_w as u32, 16),
+    )
+    .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+    .draw(target)?;
+    let label_style = MonoTextStyle::new(&FONT_9X18_BOLD, BinaryColor::Off);
+    Text::with_baseline(
+        "  PROJECT",
+        Point::new(card_x + 4, card_y + 1),
+        label_style,
+        Baseline::Top,
+    )
+    .draw(target)?;
+
+    Text::with_baseline(
+        PROJECT_NAME,
+        Point::new(card_x + 8, card_y + 22),
+        *tiny,
+        Baseline::Top,
+    )
+    .draw(target)?;
+    Text::with_baseline(
+        PROJECT_DESC,
+        Point::new(card_x + 8, card_y + 42),
+        *micro,
+        Baseline::Top,
+    )
+    .draw(target)?;
+    let mut ver_line: heapless::String<40> = heapless::String::new();
+    let _ = core::fmt::write(
+        &mut ver_line,
+        format_args!("v{}  ·  IDF {}  ·  {}", state.fw_version, state.idf_version, state.reset_reason),
+    );
+    Text::with_baseline(
+        &ver_line,
+        Point::new(card_x + 8, card_y + 58),
+        *micro,
+        Baseline::Top,
+    )
+    .draw(target)?;
+
+    // URL 行
+    let mut url: heapless::String<48> = heapless::String::new();
+    let _ = core::fmt::write(&mut url, format_args!("github.com/{}/esp32-s3-rlcd", GITHUB_USER));
+    Text::with_text_style(&url, Point::new(cx, 242), *tiny, center).draw(target)?;
+
+    // 提示
+    Text::with_baseline(
+        "KEY to switch pages",
+        Point::new(10, HEIGHT as i32 - 14),
+        *micro,
+        Baseline::Top,
+    )
+    .draw(target)?;
+
     Ok(())
 }
 
