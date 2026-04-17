@@ -24,12 +24,16 @@ use profont::{PROFONT_18_POINT, PROFONT_24_POINT};
 
 use crate::display::{Display, HEIGHT, WIDTH};
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct AppState {
     pub temperature_c: Option<f32>,
     pub humidity_pct: Option<f32>,
     pub uptime_secs: u64,
     pub sample_count: u32,
+    pub wifi_connected: bool,
+    pub ip_octets: Option<[u8; 4]>,
+    /// SNTP 同步后的本地时钟 HH:MM:SS;None = 未同步
+    pub clock_hms: Option<heapless::String<8>>,
 }
 
 pub fn render(target: &mut Display<'_>, state: &AppState) -> Result<(), core::convert::Infallible> {
@@ -90,23 +94,49 @@ pub fn render(target: &mut Display<'_>, state: &AppState) -> Result<(), core::co
     .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
     .draw(target)?;
 
-    // 页脚
-    let mut footer: heapless::String<40> = heapless::String::new();
-    let h = state.uptime_secs / 3600;
-    let m = (state.uptime_secs / 60) % 60;
-    let s = state.uptime_secs % 60;
-    let _ = write!(footer, "up {:02}:{:02}:{:02}  n={}", h, m, s, state.sample_count);
+    // 页脚左:时钟(同步后) + uptime + 采样计数
+    let mut footer_l: heapless::String<48> = heapless::String::new();
+    let up_m = (state.uptime_secs / 60) % 60;
+    let up_h = state.uptime_secs / 3600;
+    match &state.clock_hms {
+        Some(hms) => {
+            let _ = write!(footer_l, "{hms}  up {:02}:{:02}  n={}", up_h, up_m, state.sample_count);
+        }
+        None => {
+            let up_s = state.uptime_secs % 60;
+            let _ = write!(
+                footer_l,
+                "--:--:--  up {:02}:{:02}:{:02}  n={}",
+                up_h, up_m, up_s, state.sample_count
+            );
+        }
+    }
     Text::with_baseline(
-        &footer,
-        Point::new(14, HEIGHT as i32 - 28),
+        &footer_l,
+        Point::new(10, HEIGHT as i32 - 28),
         tiny,
         Baseline::Top,
     )
     .draw(target)?;
 
+    // 页脚右:WiFi 状态
+    let mut footer_r: heapless::String<32> = heapless::String::new();
+    match (state.wifi_connected, &state.ip_octets) {
+        (true, Some([a, b, c, d])) => {
+            let _ = write!(footer_r, "WiFi {}.{}.{}.{}", a, b, c, d);
+        }
+        (true, None) => {
+            let _ = footer_r.push_str("WiFi up");
+        }
+        (false, _) => {
+            let _ = footer_r.push_str("WiFi ...");
+        }
+    }
+    // 右对齐:按字符宽 9px 估宽,tiny 是 FONT_9X18_BOLD
+    let right_px = footer_r.len() as i32 * 9;
     Text::with_baseline(
-        "RLCD-4.2 / Rust",
-        Point::new(WIDTH as i32 - 148, HEIGHT as i32 - 28),
+        &footer_r,
+        Point::new(WIDTH as i32 - 10 - right_px, HEIGHT as i32 - 28),
         tiny,
         Baseline::Top,
     )

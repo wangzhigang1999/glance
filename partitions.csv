@@ -1,0 +1,17 @@
+# ESP32-S3-RLCD-4.2 分区表(16MB Flash)
+#
+# 目标:给 app 留足空间塞 WiFi + BLE + embedded-graphics + 业务代码;
+# 留一个 nvs 存 WiFi 凭据、PHY calibration;留 storage 给以后日志/缓存用。
+#
+# 布局(总 16MB):
+#   0x00000 ─ 0x08FFF  bootloader(ESP-IDF 自动,不在本表)
+#   0x09000 ─ 0x0EFFF  nvs         24KB  ← WiFi 凭据 + PHY cal + 应用配置
+#   0x0F000 ─ 0x0FFFF  phy_init    4KB
+#   0x10000 ─ 0x40FFFF factory     4MB   ← 主程序
+#   0x410000 ─ 0xFFFFFF storage    ~12MB ← SPIFFS/LittleFS 预留(暂不挂载)
+#
+# Name,     Type, SubType, Offset,   Size,      Flags
+nvs,        data, nvs,     0x9000,   0x6000,
+phy_init,   data, phy,     0xf000,   0x1000,
+factory,    app,  factory, 0x10000,  0x400000,
+storage,    data, spiffs,  0x410000, 0xBF0000,

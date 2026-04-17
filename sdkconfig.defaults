@@ -8,7 +8,10 @@ CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=4096
 # ===== ESP32-S3-WROOM-1-N16R8:16MB Flash =====
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
-CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+# 自定义分区表:factory=4MB 留给 WiFi+BLE+业务;storage 预留
+# 注:embuild 会把 ESP-IDF 项目生成在 target/.../out,partitions.csv 需要绝对路径
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="D:/codes/esp32-s3-rlcd/firmware/partitions.csv"
 
 # ===== ESP32-S3-WROOM-1-N16R8:8MB Octal PSRAM =====
 CONFIG_ESP32S3_SPIRAM_SUPPORT=y
@@ -27,3 +30,11 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 # ===== USB Serial/JTAG 做日志(不是 UART0) =====
 # 用原生 USB(就是你插 Type-C 那根)直接出日志,无需额外 USB-TTL
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# ===== WiFi =====
+# WiFi country code(中国电信法规要求),Auto 模式会按扫到的 AP BSS 自动跟随
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+# 默认 LWIP SNTP servers=1 不够冗余;多挂几个国内时间源
+CONFIG_LWIP_SNTP_MAX_SERVERS=3
+# TCP/IP stack size:默认 3072,WiFi 下建议 3584
+CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=3584
