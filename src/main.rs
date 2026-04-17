@@ -18,6 +18,7 @@ mod hw;
 mod net;
 mod ui;
 
+use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -35,11 +36,12 @@ use crate::hw::button::Button;
 use crate::hw::chip_temp::ChipTemp;
 use crate::hw::shtc3::Shtc3;
 use crate::hw::system::{mac_suffix, read_sys_stats};
+use crate::net::github::{self, ContribData};
 use crate::net::{
     format_local_date, format_local_hms, CredsStore, ProvStatus, Provisioner, Sntp, WifiCreds,
     WifiManager,
 };
-use crate::ui::{AppState, Page};
+use crate::ui::{AppState, Page, GITHUB_USER};
 
 const FW_VERSION: &str = env!("CARGO_PKG_VERSION");
 // ESP_IDF_VERSION 从 .cargo/config.toml [env] 注入
@@ -145,6 +147,10 @@ fn main() -> anyhow::Result<()> {
     // ---- SNTP(非阻塞,后台同步) ----
     // _sntp 必须保持在作用域内,否则 drop 会 sntp_stop() 终结对时
     let _sntp = Sntp::start()?;
+
+    // ---- GitHub 贡献数据:后台线程 6h 拉一次,共享 Arc<Mutex<Option>> ----
+    let contrib_shared: Arc<Mutex<Option<ContribData>>> = Arc::new(Mutex::new(None));
+    github::spawn_fetcher(GITHUB_USER, contrib_shared.clone());
     // 这里不阻塞,主循环里每次直接看 SystemTime 是否 > 2020 来判"是否已同步"
     // 理由:sntp_get_sync_status 在 poll 周期内会从 COMPLETED 翻回 IN_PROGRESS,不稳定
 
@@ -174,6 +180,8 @@ fn main() -> anyhow::Result<()> {
                     Ok((t, rh)) => {
                         state.temperature_c = Some(t);
                         state.humidity_pct = Some(rh);
+                        state.temp_hist.write(t);
+                        state.rh_hist.write(rh);
                         log::info!("#{n} T={t:.2}°C RH={rh:.2}%");
                     }
                     Err(e) => {
@@ -212,6 +220,21 @@ fn main() -> anyhow::Result<()> {
             state.stack_hwm_bytes = sys.main_stack_hwm_bytes;
             state.reset_reason = sys.reset_reason;
             state.chip_temp_c = chip_temp.as_ref().and_then(|c| c.read_celsius());
+
+            // GitHub 贡献:从共享 Arc 复制到 state
+            if let Ok(g) = contrib_shared.lock() {
+                if let Some(data) = g.as_ref() {
+                    // 取最新的 ≤364 天,7 行 × N 列
+                    let take_n = data.levels.len().min(state.contrib.len());
+                    let skip = data.levels.len().saturating_sub(take_n);
+                    for (i, lvl) in data.levels.iter().skip(skip).take(take_n).enumerate() {
+                        state.contrib[i] = *lvl;
+                    }
+                    state.contrib_weeks = ((take_n + 6) / 7) as u16;
+                    state.contrib_valid = take_n > 0;
+                    state.contrib_total_year = data.total_year;
+                }
+            }
 
             let _ = ui::render(&mut display, &state, page);
             if let Err(e) = display.flush() {

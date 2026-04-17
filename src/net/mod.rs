@@ -5,6 +5,7 @@
 //! Phase 3:BLE 配网写 NVS
 
 pub mod creds;
+pub mod github;
 pub mod prov;
 pub mod sntp;
 pub mod time;
