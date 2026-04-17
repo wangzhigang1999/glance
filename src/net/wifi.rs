@@ -113,4 +113,11 @@ impl WifiManager {
     pub fn ip_info(&self) -> Option<IpInfo> {
         self.wifi.wifi().sta_netif().get_ip_info().ok()
     }
+
+    /// 失败重试前把栈重置干净。`set_configuration` 二次调用要求 STA 不在 STARTED 态。
+    pub fn force_stop(&mut self) -> Result<()> {
+        let _ = self.wifi.disconnect();
+        let _ = self.wifi.stop();
+        Ok(())
+    }
 }

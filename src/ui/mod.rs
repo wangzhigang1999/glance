@@ -34,6 +34,10 @@ pub struct AppState {
     pub ip_octets: Option<[u8; 4]>,
     /// SNTP 同步后的本地时钟 HH:MM:SS;None = 未同步
     pub clock_hms: Option<heapless::String<8>>,
+    /// true = BLE 配网模式,UI 替换成配网提示
+    pub prov_mode: bool,
+    /// 配网模式下的一行提示(设备名 / "connecting xxx" / ...)
+    pub prov_hint: heapless::String<32>,
 }
 
 pub fn render(target: &mut Display<'_>, state: &AppState) -> Result<(), core::convert::Infallible> {
@@ -50,6 +54,11 @@ pub fn render(target: &mut Display<'_>, state: &AppState) -> Result<(), core::co
     Rectangle::new(Point::new(3, 3), Size::new(WIDTH as u32 - 6, HEIGHT as u32 - 6))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(target)?;
+
+    // BLE 配网模式:整张屏显示配网提示,不画温湿度卡片
+    if state.prov_mode {
+        return render_prov(target, state, &tiny, &header, &big);
+    }
 
     // 左右两个 card:各占一半,预留 6 像素外边距
     let card_y = 20;
@@ -139,6 +148,61 @@ pub fn render(target: &mut Display<'_>, state: &AppState) -> Result<(), core::co
         Point::new(WIDTH as i32 - 10 - right_px, HEIGHT as i32 - 28),
         tiny,
         Baseline::Top,
+    )
+    .draw(target)?;
+
+    Ok(())
+}
+
+/// BLE 配网模式下的全屏提示,引导用户用手机连接 BLE 写凭据。
+fn render_prov(
+    target: &mut Display<'_>,
+    state: &AppState,
+    tiny: &MonoTextStyle<'_, BinaryColor>,
+    header: &MonoTextStyle<'_, BinaryColor>,
+    big: &MonoTextStyle<'_, BinaryColor>,
+) -> Result<(), core::convert::Infallible> {
+    let cx = WIDTH as i32 / 2;
+    let center_style = embedded_graphics::text::TextStyleBuilder::new()
+        .alignment(Alignment::Center)
+        .baseline(Baseline::Middle)
+        .build();
+
+    // 顶部:大标题
+    Text::with_text_style("BLE SETUP", Point::new(cx, 50), *big, center_style)
+        .draw(target)?;
+
+    // 中部:设备名
+    Text::with_text_style(
+        "Connect to BLE device:",
+        Point::new(cx, 110),
+        *header,
+        center_style,
+    )
+    .draw(target)?;
+    Text::with_text_style(&state.prov_hint, Point::new(cx, 148), *big, center_style)
+        .draw(target)?;
+
+    // 底部:使用说明
+    Text::with_text_style(
+        "Open nRF Connect, scan, connect,",
+        Point::new(cx, 210),
+        *tiny,
+        center_style,
+    )
+    .draw(target)?;
+    Text::with_text_style(
+        "write SSID, PASSWORD, COMMIT=01.",
+        Point::new(cx, 232),
+        *tiny,
+        center_style,
+    )
+    .draw(target)?;
+    Text::with_text_style(
+        "Service 524c4344-c001-4c7c-9b4f-00..",
+        Point::new(cx, 268),
+        *tiny,
+        center_style,
     )
     .draw(target)?;
 
