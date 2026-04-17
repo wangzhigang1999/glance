@@ -1,0 +1,23 @@
+[build]
+target = "xtensa-esp32s3-espidf"
+# Windows 路径长度规避:target 改到 D:/t/rlcd,避免 esp-idf-sys 编译路径超限
+target-dir = "D:/t/rlcd"
+
+[target.'cfg(target_os = "espidf")']
+linker = "ldproxy"
+runner = "espflash flash --monitor"
+rustflags = [ "--cfg",  "espidf_time64"]
+
+[unstable]
+build-std = ["std", "panic_abort"]
+
+[env]
+MCU = "esp32s3"
+ESP_IDF_VERSION = "v5.5.3"
+ESP_IDF_TOOLS_INSTALL_DIR = "workspace"
+# 国内镜像:ESP-IDF 构建时下载 submodule / tools 走乐鑫自建镜像
+IDF_GITHUB_ASSETS = "dl.espressif.cn/github_assets"
+# 搭配 target-dir 必须声明,否则 embuild 找不到工作区根
+CARGO_WORKSPACE_DIR = { value = "", relative = true }
+# bindgen 生成 FFI 时需要 libclang
+LIBCLANG_PATH = "C:\\Users\\wangzhigang\\.rustup\\toolchains\\esp\\xtensa-esp32-elf-clang\\esp-clang\\bin\\libclang.dll"
