@@ -82,7 +82,8 @@ struct GqlResp {
 }
 #[derive(serde::Deserialize)]
 struct GqlData {
-    user: GqlUser,
+    // user 可能为 null(用户名不存在),此时 errors 会带原因
+    user: Option<GqlUser>,
 }
 #[derive(serde::Deserialize)]
 struct GqlUser {
@@ -116,10 +117,24 @@ struct Day {
 fn parse_response(body: &[u8]) -> Result<ContribData> {
     let resp: GqlResp = serde_json::from_slice(body).context("graphql JSON")?;
     if let Some(errs) = resp.errors {
-        let s = serde_json::to_string(&errs).unwrap_or_default();
-        return Err(anyhow!("GitHub GraphQL error: {}", &s[..s.len().min(200)]));
+        // 尝试提取第一个 errors[].message 展示给人看
+        let msg = errs
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                let s = serde_json::to_string(&errs).unwrap_or_default();
+                s[..s.len().min(200)].to_string()
+            });
+        return Err(anyhow!("GitHub: {}", msg));
     }
-    let cal = resp.data.context("graphql: no data")?.user.cc.cal;
+    let user = resp
+        .data
+        .and_then(|d| d.user)
+        .context("user not found")?;
+    let cal = user.cc.cal;
 
     let mut counts: Vec<u32> = Vec::with_capacity(400);
     let mut levels: Vec<u8> = Vec::with_capacity(400);
