@@ -244,8 +244,7 @@ fn find_total_count(body: &str) -> Option<i64> {
 }
 
 pub fn spawn_fetcher(
-    user: &'static str,
-    token: &'static str,
+    config: crate::config::SharedConfig,
     shared: Arc<Mutex<Option<Activity>>>,
     error_shared: Arc<Mutex<String>>,
 ) {
@@ -254,9 +253,26 @@ pub fn spawn_fetcher(
         .stack_size(12 * 1024)
         .spawn(move || {
             // stagger:避开启动瞬间 github + notifications 同时握 TLS 挤 lwip socket
-            thread::sleep(Duration::from_secs(8));
+            let stagger = config.read().unwrap().activity_stagger_s as u64;
+            thread::sleep(Duration::from_secs(stagger));
             loop {
-                let interval = match fetch(user, token) {
+                let (user, token, ok_s, err_s) = {
+                    let c = config.read().unwrap();
+                    (
+                        c.gh_user.clone(),
+                        c.gh_token.clone(),
+                        c.activity_ok_s as u64,
+                        c.activity_err_s as u64,
+                    )
+                };
+                if user.is_empty() || token.is_empty() {
+                    if let Ok(mut e) = error_shared.lock() {
+                        *e = "no user/token".into();
+                    }
+                    thread::sleep(Duration::from_secs(30));
+                    continue;
+                }
+                let interval = match fetch(&user, &token) {
                     Ok(a) => {
                         log::info!(
                             "GH Activity: last={:?} open_prs={}",
@@ -269,7 +285,7 @@ pub fn spawn_fetcher(
                         if let Ok(mut e) = error_shared.lock() {
                             e.clear();
                         }
-                        Duration::from_secs(3 * 60) // 成功:3 分钟
+                        Duration::from_secs(ok_s)
                     }
                     Err(e) => {
                         let msg = format!("{e:#}");
@@ -277,7 +293,7 @@ pub fn spawn_fetcher(
                         if let Ok(mut es) = error_shared.lock() {
                             *es = msg;
                         }
-                        Duration::from_secs(2 * 60) // 失败:2 分钟重试
+                        Duration::from_secs(err_s)
                     }
                 };
                 thread::sleep(interval);

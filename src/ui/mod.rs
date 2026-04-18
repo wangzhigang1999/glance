@@ -98,6 +98,9 @@ pub struct AppState {
     pub open_prs: u32,
     pub activity_valid: bool,
     pub activity_error: heapless::String<80>,
+
+    // GitHub 用户名(运行时可改,主循环从 SharedConfig 拷过来)
+    pub gh_user: heapless::String<40>,
 }
 
 impl Default for AppState {
@@ -144,6 +147,7 @@ impl Default for AppState {
             open_prs: 0,
             activity_valid: false,
             activity_error: heapless::String::new(),
+            gh_user: heapless::String::new(),
         }
     }
 }
@@ -813,9 +817,6 @@ fn draw_sparkline(
 // GitHub 页
 // ============================================================================
 
-/// 用户 GitHub 身份。目前硬编码,未来可从 NVS / build.rs 注入。
-pub const GITHUB_USER: &str = "wangzhigang1999";
-
 fn render_github(
     target: &mut Display<'_>,
     state: &AppState,
@@ -830,8 +831,13 @@ fn render_github(
         .baseline(Baseline::Middle)
         .build();
 
-    let mut uname: heapless::String<40> = heapless::String::new();
-    let _ = core::fmt::write(&mut uname, format_args!("@{}", GITHUB_USER));
+    let mut uname: heapless::String<48> = heapless::String::new();
+    let user_str = if state.gh_user.is_empty() {
+        "unset"
+    } else {
+        state.gh_user.as_str()
+    };
+    let _ = core::fmt::write(&mut uname, format_args!("@{}", user_str));
 
     // ===== 顶栏 y=0..30 =====
     Text::with_baseline(&uname, Point::new(14, 7), *header, Baseline::Top).draw(target)?;

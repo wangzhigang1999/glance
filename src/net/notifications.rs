@@ -142,13 +142,24 @@ fn unescape(s: &str) -> String {
     out
 }
 
-/// 后台线程:5 分钟一次。
-pub fn spawn_fetcher(token: &'static str, shared: Arc<Mutex<Option<NotifSummary>>>) {
+/// 后台线程:周期从 config.notif_s 读,每轮 re-read
+pub fn spawn_fetcher(
+    config: crate::config::SharedConfig,
+    shared: Arc<Mutex<Option<NotifSummary>>>,
+) {
     thread::Builder::new()
         .name("gh-notif".into())
         .stack_size(12 * 1024)
         .spawn(move || loop {
-            match fetch(token) {
+            let (token, period_s) = {
+                let c = config.read().unwrap();
+                (c.gh_token.clone(), c.notif_s as u64)
+            };
+            if token.is_empty() {
+                thread::sleep(Duration::from_secs(30));
+                continue;
+            }
+            match fetch(&token) {
                 Ok(s) => {
                     log::info!("GH Notif OK: {} unread", s.count);
                     if let Ok(mut g) = shared.lock() {
@@ -159,7 +170,7 @@ pub fn spawn_fetcher(token: &'static str, shared: Arc<Mutex<Option<NotifSummary>
                     log::warn!("GH Notif fetch failed: {e:#}");
                 }
             }
-            thread::sleep(Duration::from_secs(180)); // 3 min
+            thread::sleep(Duration::from_secs(period_s));
         })
         .expect("spawn gh notif fetcher");
 }

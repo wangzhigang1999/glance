@@ -13,13 +13,14 @@
 //! - 写 SSID 特征(524c4344-...-001),写 PASSWORD(...-002),写 COMMIT=0x01(...-003)
 //! - 订阅 STATUS(...-004)的 notify 观察连接过程
 
+mod config;
 mod display;
 mod hw;
 mod net;
 mod ui;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -41,20 +42,18 @@ use crate::net::activity::{self, Activity};
 use crate::net::github::{self, ContribData};
 use crate::net::notifications::{self, NotifSummary};
 use crate::net::screen_http;
+use crate::config::{ConfigStore, RuntimeConfig, SharedConfig};
 use crate::net::{
     format_local_date, format_local_hms, CredsStore, ProvStatus, Provisioner, Sntp, WifiCreds,
     WifiManager,
 };
-use crate::ui::{AppState, Page, GITHUB_USER};
+use crate::ui::{AppState, Page};
 
 const FW_VERSION: &str = env!("CARGO_PKG_VERSION");
 // ESP_IDF_VERSION 从 .cargo/config.toml [env] 注入
 const IDF_VERSION: &str = env!("ESP_IDF_VERSION");
-// 编译时注入的 GitHub PAT(scope=notifications);未设置则禁用通知拉取
-const GITHUB_TOKEN: Option<&'static str> = option_env!("GITHUB_TOKEN");
-
-/// 中国时区 UTC+8
-const TZ_OFFSET_SECS: i64 = 8 * 3600;
+// 编译时注入的 GitHub PAT(仅首次 seed 进 NVS);运行时以 NVS 里的 gh_token 为准
+const GITHUB_TOKEN_COMPILE: Option<&'static str> = option_env!("GITHUB_TOKEN");
 
 /// 首次启动/NVS 空时,BLE 广播名
 const BLE_DEVICE_NAME: &str = "RLCD-Thermo";
@@ -72,6 +71,35 @@ fn main() -> anyhow::Result<()> {
     let sys_loop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
 
+    // ---- Runtime config(NVS + SharedConfig);开机就得到,splash_flash 等要用 ----
+    let config_store = Arc::new(ConfigStore::new(nvs.clone())?);
+    let mut base = RuntimeConfig::default();
+    // 一次性 seed:编译时 env 有 token 就作为初值(会被 NVS 覆盖,空 NVS 时生效)
+    if let Some(tok) = GITHUB_TOKEN_COMPILE {
+        if !tok.is_empty() {
+            base.gh_token = tok.into();
+        }
+    }
+    let loaded = config_store.load(base);
+    log::info!(
+        "Config loaded: user={} token={} contrib={}/{} act={}/{} notif={} refresh={} tz={}",
+        loaded.gh_user,
+        if loaded.gh_token.is_empty() { "(none)" } else { "(set)" },
+        loaded.contrib_ok_s,
+        loaded.contrib_err_s,
+        loaded.activity_ok_s,
+        loaded.activity_err_s,
+        loaded.notif_s,
+        loaded.sensor_refresh_s,
+        loaded.tz_off_s,
+    );
+    // NVS 首次写入:把 seeded 值落盘(省得下次 seed 又跑)
+    if let Err(e) = config_store.save(&loaded) {
+        log::warn!("initial config save failed: {e:#}");
+    }
+    let splash_n = loaded.splash_flash;
+    let config: SharedConfig = Arc::new(RwLock::new(loaded));
+
     // ---- Display ----
     log::info!("Init ST7305 display");
     let st7305 = St7305::new(
@@ -85,8 +113,8 @@ fn main() -> anyhow::Result<()> {
     let mut display = Display::new(st7305);
     display.init()?;
     log::info!("Display ready (400x300 landscape)");
-    // 开机除斑:8 次黑-白翻转,~6.4s,消除反射式 LCD 的液晶分子残影/黑斑
-    display.splash_flash(8)?;
+    // 开机除斑:N 次黑-白翻转,消除反射式 LCD 的液晶分子残影/黑斑
+    display.splash_flash(splash_n as u32)?;
 
     let mut state = AppState::default();
     let _ = ui::render(&mut display, &state, Page::Dashboard);
@@ -157,30 +185,24 @@ fn main() -> anyhow::Result<()> {
     // _sntp 必须保持在作用域内,否则 drop 会 sntp_stop() 终结对时
     let _sntp = Sntp::start()?;
 
-    // ---- GitHub 贡献数据:GraphQL,需要 token ----
+    // ---- GitHub 贡献数据:GraphQL(每轮从 config 读 user/token/间隔) ----
     let contrib_shared: Arc<Mutex<Option<ContribData>>> = Arc::new(Mutex::new(None));
     let contrib_err_shared: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-    match GITHUB_TOKEN {
-        Some(tok) if !tok.is_empty() => {
-            github::spawn_fetcher(
-                GITHUB_USER,
-                tok,
-                contrib_shared.clone(),
-                contrib_err_shared.clone(),
-            );
-        }
-        _ => {
-            log::warn!("GitHub contribution: no token, skipped");
-            if let Ok(mut e) = contrib_err_shared.lock() {
-                *e = "no token".into();
-            }
-        }
-    }
+    github::spawn_fetcher(
+        config.clone(),
+        contrib_shared.clone(),
+        contrib_err_shared.clone(),
+    );
 
-    // ---- 屏幕镜像 HTTP 服务 ----
+    // ---- 屏幕镜像 HTTP 服务 + 运行时配置 API ----
     let screen_shared = screen_http::new_shared_fb();
     let http_next_flag = Arc::new(AtomicBool::new(false));
-    let _screen_server = match screen_http::start(screen_shared.clone(), http_next_flag.clone()) {
+    let _screen_server = match screen_http::start(
+        screen_shared.clone(),
+        http_next_flag.clone(),
+        config.clone(),
+        config_store.clone(),
+    ) {
         Ok(s) => Some(s),
         Err(e) => {
             log::warn!("Screen HTTP server failed to start: {e:#}");
@@ -188,62 +210,76 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    // ---- GitHub Notifications + Activity:共用 token,错位启动避免 TLS 挤 socket ----
+    // ---- GitHub Notifications + Activity(同样走 config) ----
     let notif_shared: Arc<Mutex<Option<NotifSummary>>> = Arc::new(Mutex::new(None));
     let activity_shared: Arc<Mutex<Option<Activity>>> = Arc::new(Mutex::new(None));
     let activity_err_shared: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-    match GITHUB_TOKEN {
-        Some(tok) if !tok.is_empty() => {
-            notifications::spawn_fetcher(tok, notif_shared.clone());
-            activity::spawn_fetcher(
-                GITHUB_USER,
-                tok,
-                activity_shared.clone(),
-                activity_err_shared.clone(),
-            );
-            log::info!("GH Notifications + Activity: fetchers spawned");
-        }
-        _ => log::info!("GH Notifications + Activity: no token, skipped"),
-    }
+    notifications::spawn_fetcher(config.clone(), notif_shared.clone());
+    activity::spawn_fetcher(
+        config.clone(),
+        activity_shared.clone(),
+        activity_err_shared.clone(),
+    );
+    log::info!("GH fetchers: contribution + notifications + activity spawned");
     // 这里不阻塞,主循环里每次直接看 SystemTime 是否 > 2020 来判"是否已同步"
     // 理由:sntp_get_sync_status 在 poll 周期内会从 COMPLETED 翻回 IN_PROGRESS,不稳定
 
     // ---- 主循环 ----
-    // 100ms tick:既给按钮扫描足够响应,又让重活(传感器+重绘)按 5s 节奏跑。
+    // 100ms tick:按钮响应;重活(传感器+重绘)按 config.sensor_refresh_s 节奏跑。
     let boot = Instant::now();
     let mut n: u32 = 0;
     let mut page = Page::Dashboard;
     let mut last_refresh = Instant::now() - Duration::from_secs(60);
+    let mut last_rotate = Instant::now();
     let tick = Duration::from_millis(100);
-    const REFRESH_PERIOD: Duration = Duration::from_secs(5);
 
     loop {
-        // 扫两个按钮 + HTTP /next 请求,任一触发切页。
+        // 每轮从 config 读一次热重载值
+        let (refresh_period, auto_rotate, auto_rotate_period, tz_off, t_off, h_off, cfg_user) = {
+            let c = config.read().unwrap();
+            (
+                Duration::from_secs(c.sensor_refresh_s as u64),
+                c.auto_rotate,
+                Duration::from_secs(c.auto_rotate_s as u64),
+                c.tz_off_s as i64,
+                c.temp_off_c,
+                c.humid_off_pct,
+                c.gh_user.clone(),
+            )
+        };
+
+        // 扫两个按钮 + HTTP /next + 自动翻页,任一触发切页
         let boot_edge = btn_boot.poll_pressed();
         let key_edge = btn_key.poll_pressed();
         let http_next = http_next_flag.swap(false, Ordering::Relaxed);
-        let page_changed = if boot_edge || key_edge || http_next {
+        let auto_due = auto_rotate && last_rotate.elapsed() >= auto_rotate_period;
+        let page_changed = if boot_edge || key_edge || http_next || auto_due {
             page = page.next();
+            last_rotate = Instant::now();
             log::info!(
-                "Page switch (BOOT={} KEY={} HTTP={}) -> {:?}",
-                boot_edge, key_edge, http_next, page
+                "Page switch (BOOT={} KEY={} HTTP={} AUTO={}) -> {:?}",
+                boot_edge, key_edge, http_next, auto_due, page
             );
             true
         } else {
             false
         };
 
-        let due = last_refresh.elapsed() >= REFRESH_PERIOD;
+        let due = last_refresh.elapsed() >= refresh_period;
         if page_changed || due {
             if due {
                 n = n.saturating_add(1);
                 match sensor.read() {
-                    Ok((t, rh)) => {
+                    Ok((t_raw, rh_raw)) => {
+                        let t = t_raw + t_off;
+                        let rh = (rh_raw + h_off).clamp(0.0, 100.0);
                         state.temperature_c = Some(t);
                         state.humidity_pct = Some(rh);
                         state.temp_hist.write(t);
                         state.rh_hist.write(rh);
-                        log::info!("#{n} T={t:.2}°C RH={rh:.2}%");
+                        log::info!(
+                            "#{n} T={t:.2}°C (raw={t_raw:.2}, off={t_off:+.2}) RH={rh:.2}% (raw={rh_raw:.2}, off={h_off:+.2})"
+                        );
                     }
                     Err(e) => {
                         log::error!("SHTC3 read failed: {e}");
@@ -258,12 +294,20 @@ fn main() -> anyhow::Result<()> {
             state.wifi_connected = wifi.is_connected();
             state.ip_octets = wifi.ip_info().map(|i| i.ip.octets());
             state.rssi = wifi.rssi();
-            state.clock_hm = format_local_hms(TZ_OFFSET_SECS).map(|s| {
+            state.clock_hm = format_local_hms(tz_off).map(|s| {
                 let mut out: heapless::String<8> = heapless::String::new();
                 let _ = out.push_str(&s[..5.min(s.len())]);
                 out
             });
-            state.clock_date = format_local_date(TZ_OFFSET_SECS);
+            state.clock_date = format_local_date(tz_off);
+
+            // 同步 GitHub 用户名到 state(供 UI 渲染)
+            state.gh_user.clear();
+            for ch in cfg_user.chars().take(40) {
+                if state.gh_user.push(ch).is_err() {
+                    break;
+                }
+            }
             state.battery = match battery.read() {
                 Ok(PowerSource::Battery { mv, percent }) => Some((mv, percent)),
                 Ok(PowerSource::Usb) => None,
