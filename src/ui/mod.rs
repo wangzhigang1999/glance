@@ -552,23 +552,58 @@ fn render_stats(
         draw_progress_bar(target, left_x, bar1_y, bar_w, bar_h, app_pct)?;
     }
 
-    // Line 2: HEAP
-    let heap_used = state.heap_total.saturating_sub(state.heap_free);
-    let heap_pct = if state.heap_total > 0 {
-        ((heap_used as u64 * 100) / state.heap_total as u64).min(100) as u32
+    // Line 2: SRAM(内部,紧) + PSRAM(外部 8MB,闲)并列同一行
+    //   左列 = 内部 SRAM:DMA/WiFi/BLE 必用,吃紧就是吃它
+    //   右列 = 外部 PSRAM:大堆,基本空着
+    let col_gap = 10i32;
+    let col_w = (bar_w - col_gap) / 2;
+    let sram_x = left_x;
+    let psram_x = left_x + col_w + col_gap;
+
+    let sram_used = state.heap_total.saturating_sub(state.heap_free);
+    let sram_pct = if state.heap_total > 0 {
+        ((sram_used as u64 * 100) / state.heap_total as u64).min(100) as u32
     } else {
         0
     };
-    let mut l2: heapless::String<48> = heapless::String::new();
+    let mut l_sram: heapless::String<24> = heapless::String::new();
+    // SRAM 加一个空格凑齐与 "PSRAM " 同宽(5+1),让两列数值按相同列起点
     let _ = write!(
-        l2,
-        "HEAP  {} / {} KB  {}%",
-        heap_used / 1024,
+        l_sram,
+        "SRAM  {}/{}K {}%",
+        sram_used / 1024,
         state.heap_total / 1024,
-        heap_pct,
+        sram_pct,
     );
-    Text::with_baseline(&l2, Point::new(left_x, line2_y), micro, Baseline::Top).draw(target)?;
-    draw_progress_bar(target, left_x, bar2_y, bar_w, bar_h, heap_pct)?;
+    Text::with_baseline(&l_sram, Point::new(sram_x, line2_y), micro, Baseline::Top).draw(target)?;
+    draw_progress_bar(target, sram_x, bar2_y, col_w, bar_h, sram_pct)?;
+
+    let psram_used = state.psram_total.saturating_sub(state.psram_free);
+    let psram_pct = if state.psram_total > 0 {
+        ((psram_used as u64 * 100) / state.psram_total as u64).min(100) as u32
+    } else {
+        0
+    };
+    let mut l_psram: heapless::String<24> = heapless::String::new();
+    if state.psram_total == 0 {
+        let _ = write!(l_psram, "PSRAM n/a");
+    } else {
+        // 0.1 MB 精度;1 MB = 1 048 576,0.1 MB ≈ 104 858
+        let used_d = ((psram_used as u64) * 10 + 524_288) / 1_048_576;
+        let total_d = ((state.psram_total as u64) * 10 + 524_288) / 1_048_576;
+        let _ = write!(
+            l_psram,
+            "PSRAM {}.{}/{}.{}M {}%",
+            used_d / 10,
+            used_d % 10,
+            total_d / 10,
+            total_d % 10,
+            psram_pct,
+        );
+    }
+    Text::with_baseline(&l_psram, Point::new(psram_x, line2_y), micro, Baseline::Top)
+        .draw(target)?;
+    draw_progress_bar(target, psram_x, bar2_y, col_w, bar_h, psram_pct)?;
 
     // Line 3: UP + RST + IDF
     let up_h = state.uptime_secs / 3600;
