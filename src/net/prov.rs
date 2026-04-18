@@ -24,7 +24,7 @@ use esp32_nimble::{
     BLEDevice, NimbleProperties,
 };
 use std::sync::{
-    mpsc::{self, Receiver, Sender, TryRecvError},
+    mpsc::{self, Receiver, Sender},
     Arc, Mutex,
 };
 
@@ -172,14 +172,6 @@ impl Provisioner {
             creds_rx: rx,
             status_char,
         })
-    }
-
-    pub fn try_recv_creds(&self) -> Option<WifiCreds> {
-        match self.creds_rx.try_recv() {
-            Ok(c) => Some(c),
-            Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => None,
-        }
     }
 
     /// 阻塞等凭据。超时返回 None(由调用方决定是否继续)

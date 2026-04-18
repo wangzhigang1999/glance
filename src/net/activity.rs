@@ -3,7 +3,6 @@
 //! `/users/{user}/events` 带 token 可见 private 事件,按时间倒序;
 //! 第一条就是最新。不同 type 从 payload 不同子对象取动作/目标。
 
-use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;

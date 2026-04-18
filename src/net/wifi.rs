@@ -16,8 +16,6 @@ use esp_idf_svc::{
     nvs::EspDefaultNvsPartition,
     wifi::{AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi},
 };
-use std::time::Duration;
-
 #[derive(Debug, Clone)]
 pub struct WifiCreds {
     pub ssid: heapless::String<32>,
@@ -86,24 +84,6 @@ impl WifiManager {
             ip_info.subnet.mask
         );
         Ok(ip_info)
-    }
-
-    /// 带指数退避的阻塞式连接:失败后 1s,2s,4s... 上限 30s,一直到成功。
-    /// 仅在启动期调用;运行时的重连用 `tick_reconnect`。
-    pub fn connect_with_backoff(&mut self, creds: &WifiCreds) -> IpInfo {
-        let mut backoff_ms = 1000u64;
-        loop {
-            match self.connect(creds) {
-                Ok(info) => return info,
-                Err(e) => {
-                    log::warn!("wifi connect failed: {e:#}; retry in {backoff_ms}ms");
-                    // 失败后要 stop,不然 set_configuration 会报 ESP_ERR_INVALID_STATE
-                    let _ = self.wifi.stop();
-                    std::thread::sleep(Duration::from_millis(backoff_ms));
-                    backoff_ms = (backoff_ms * 2).min(30_000);
-                }
-            }
-        }
     }
 
     pub fn is_connected(&self) -> bool {

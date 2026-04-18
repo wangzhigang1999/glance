@@ -8,7 +8,6 @@
 //! `POST /api/config`  → JSON body,更新字段,保存 NVS
 //! `POST /api/reboot`  → esp_restart()
 
-use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -237,6 +236,53 @@ pub fn start(
         resp.write_all(HTML.as_bytes())?;
         Ok(())
     })?;
+
+    // ---- GET /api/sys: 实时系统快照,调试用 ----
+    server.fn_handler(
+        "/api/sys",
+        Method::Get,
+        move |req| -> Result<(), anyhow::Error> {
+            let sys = crate::hw::system::read_sys_stats();
+            let flash = crate::hw::system::read_flash_stats();
+            #[derive(serde::Serialize)]
+            struct View {
+                heap_free: u32,
+                heap_total: u32,
+                heap_min_ever: u32,
+                psram_free: u32,
+                psram_total: u32,
+                main_stack_hwm_bytes: u32,
+                reset_reason: &'static str,
+                flash_total: u32,
+                app_part_addr: u32,
+                app_part_size: u32,
+                app_used: u32,
+            }
+            let v = View {
+                heap_free: sys.heap_free as u32,
+                heap_total: sys.heap_total as u32,
+                heap_min_ever: sys.heap_min_ever as u32,
+                psram_free: sys.psram_free as u32,
+                psram_total: sys.psram_total as u32,
+                main_stack_hwm_bytes: sys.main_stack_hwm_bytes,
+                reset_reason: sys.reset_reason,
+                flash_total: flash.flash_total,
+                app_part_addr: flash.app_part_addr,
+                app_part_size: flash.app_part_size,
+                app_used: flash.app_used,
+            };
+            let s = serde_json::to_string(&v).unwrap_or_else(|_| "{}".into());
+            let len = s.len().to_string();
+            let headers = [
+                ("content-type", "application/json; charset=utf-8"),
+                ("cache-control", "no-store"),
+                ("content-length", len.as_str()),
+            ];
+            let mut resp = req.into_response(200, Some("OK"), &headers)?;
+            resp.write_all(s.as_bytes())?;
+            Ok(())
+        },
+    )?;
 
     server.fn_handler("/settings", Method::Get, |req| -> Result<(), anyhow::Error> {
         let mut resp = req.into_ok_response()?;

@@ -20,7 +20,7 @@ pub mod st7305;
 
 use anyhow::Result;
 use embedded_graphics::pixelcolor::BinaryColor;
-use embedded_graphics::prelude::{Dimensions, DrawTarget, OriginDimensions, Point, Size};
+use embedded_graphics::prelude::{Dimensions, DrawTarget, OriginDimensions, Size};
 use embedded_graphics::Pixel;
 
 pub use framebuffer::{FrameBuffer, HEIGHT, WIDTH};
@@ -66,11 +66,6 @@ impl<'d> Display<'d> {
         Ok(())
     }
 
-    /// 清整个 framebuffer(只改本地内存,没送屏)。
-    pub fn clear_local(&mut self, color: BinaryColor) {
-        self.fb.fill(color);
-    }
-
     /// 把 framebuffer 全量送到 ST7305。
     pub fn flush(&mut self) -> Result<()> {
         self.driver.write_frame(self.fb.raw())?;
@@ -112,7 +107,3 @@ impl<'d> DrawTarget for Display<'d> {
     }
 }
 
-/// 像素坐标转为 bounding-box 检查辅助(给未实现 Dimensions 的上层用)
-pub fn in_bounds(p: Point) -> bool {
-    p.x >= 0 && p.x < WIDTH as i32 && p.y >= 0 && p.y < HEIGHT as i32
-}

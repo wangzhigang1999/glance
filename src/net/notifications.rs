@@ -3,7 +3,6 @@
 //! API: GET https://api.github.com/notifications?all=false
 //! 响应: 数组,每条含 `subject.title` 和 `reason`。这里只取 title + count。
 
-use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;

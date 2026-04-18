@@ -25,10 +25,6 @@ impl Button {
         })
     }
 
-    pub fn is_high_now(&self) -> bool {
-        self.pin.is_high()
-    }
-
     /// 返回 true 只在"按下沿"的那一 tick。
     pub fn poll_pressed(&mut self) -> bool {
         let high = self.pin.is_high();

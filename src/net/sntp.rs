@@ -11,8 +11,7 @@
 //! - cn.pool.ntp.org      NTP Pool 中国镜像
 
 use anyhow::Result;
-use esp_idf_svc::sntp::{EspSntp, OperatingMode, SntpConf, SyncMode, SyncStatus};
-use std::time::{Duration, Instant};
+use esp_idf_svc::sntp::{EspSntp, OperatingMode, SntpConf, SyncMode};
 
 pub struct Sntp {
     _inner: EspSntp<'static>,
@@ -35,29 +34,4 @@ impl Sntp {
         Ok(Self { _inner: inner })
     }
 
-    pub fn status(&self) -> SyncStatus {
-        self._inner.get_sync_status()
-    }
-
-    pub fn is_synced(&self) -> bool {
-        matches!(self.status(), SyncStatus::Completed)
-    }
-
-    /// 阻塞等待首次对时(用于启动期"UI 显示时间"前兜底)。
-    /// 超时返回 false,不 panic——WiFi 若断开也不会卡死主程序。
-    pub fn wait_synced(&self, timeout: Duration) -> bool {
-        let start = Instant::now();
-        while !self.is_synced() {
-            if start.elapsed() > timeout {
-                log::warn!("SNTP first sync timeout after {:?}", timeout);
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        log::info!(
-            "SNTP first sync OK in {} ms",
-            start.elapsed().as_millis()
-        );
-        true
-    }
 }

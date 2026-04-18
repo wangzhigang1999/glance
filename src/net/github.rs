@@ -4,7 +4,6 @@
 //! 代理从国内网络走国际线路被墙/丢包(原先 `ESP_ERR_HTTP_CONNECT` 就是此)。
 //! api.github.com 在国内有 CDN 可达,复用已有 GITHUB_TOKEN。
 
-use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;

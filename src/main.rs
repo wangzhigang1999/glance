@@ -37,7 +37,7 @@ use crate::hw::battery::{Battery, PowerSource};
 use crate::hw::button::Button;
 use crate::hw::chip_temp::ChipTemp;
 use crate::hw::shtc3::Shtc3;
-use crate::hw::system::{mac_suffix, read_sys_stats};
+use crate::hw::system::{mac_suffix, read_flash_stats, read_sys_stats};
 use crate::net::activity::{self, Activity};
 use crate::net::github::{self, ContribData};
 use crate::net::notifications::{self, NotifSummary};
@@ -149,6 +149,17 @@ fn main() -> anyhow::Result<()> {
     let fw_version: &'static str = FW_VERSION;
     let idf_version: &'static str = IDF_VERSION.strip_prefix('v').unwrap_or(IDF_VERSION);
     let mac = mac_suffix();
+    let flash_stats = read_flash_stats();
+    log::info!(
+        "Flash: chip={}MB part@0x{:x} size={}KB app_img={}KB",
+        flash_stats.flash_total / 1024 / 1024,
+        flash_stats.app_part_addr,
+        flash_stats.app_part_size / 1024,
+        flash_stats.app_used / 1024,
+    );
+    state.flash_total = flash_stats.flash_total;
+    state.app_part_size = flash_stats.app_part_size;
+    state.app_used = flash_stats.app_used;
 
     // ---- NVS creds ----
     let creds_store = CredsStore::new(nvs.clone())?;

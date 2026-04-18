@@ -29,7 +29,7 @@ use embedded_graphics::{
     },
     pixelcolor::BinaryColor,
     prelude::*,
-    primitives::{Line, PrimitiveStyle, Rectangle},
+    primitives::{Circle, Line, PrimitiveStyle, Rectangle},
     text::{Alignment, Baseline, Text},
 };
 use profont::{PROFONT_14_POINT, PROFONT_18_POINT, PROFONT_24_POINT};
@@ -101,6 +101,11 @@ pub struct AppState {
 
     // GitHub 用户名(运行时可改,主循环从 SharedConfig 拷过来)
     pub gh_user: heapless::String<40>,
+
+    // Flash 存储(启动时一次性填,之后不变)
+    pub flash_total: u32,
+    pub app_part_size: u32,
+    pub app_used: u32,
 }
 
 impl Default for AppState {
@@ -148,6 +153,9 @@ impl Default for AppState {
             activity_valid: false,
             activity_error: heapless::String::new(),
             gh_user: heapless::String::new(),
+            flash_total: 0,
+            app_part_size: 0,
+            app_used: 0,
         }
     }
 }
@@ -155,26 +163,26 @@ impl Default for AppState {
 // y 坐标分隔线
 const Y_SEP_TOP: i32 = 30;
 const Y_SEP_CLOCK: i32 = 108;
-const Y_SEP_TH: i32 = 154;
-const Y_SEP_STATS: i32 = 232;
+// TH 段含值 + 下方 mini sparkline(T/RH 10 分钟趋势),高 102px 留足曲线空间
+const Y_SEP_TH: i32 = 210;
+// wifi 瘦到 24px
+const Y_SEP_STATS: i32 = 276;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Dashboard,
-    History,
     Github,
 }
 
 impl Page {
     pub fn next(self) -> Self {
         match self {
-            Self::Dashboard => Self::History,
-            Self::History => Self::Github,
+            Self::Dashboard => Self::Github,
             Self::Github => Self::Dashboard,
         }
     }
 
-    pub const ALL: &'static [Page] = &[Page::Dashboard, Page::History, Page::Github];
+    pub const ALL: &'static [Page] = &[Page::Dashboard, Page::Github];
 
     pub fn index(self) -> usize {
         Self::ALL.iter().position(|p| *p == self).unwrap_or(0)
@@ -211,7 +219,6 @@ pub fn render(
 
     match page {
         Page::Dashboard => render_dashboard(target, state, &tiny, &micro, &th_val, &th_label)?,
-        Page::History => render_history(target, state, &tiny, &micro, &header)?,
         Page::Github => render_github(target, state, &tiny, &micro, &header, &th_val)?,
     }
 
@@ -229,7 +236,8 @@ fn render_dashboard(
     th_val: &MonoTextStyle<'_, BinaryColor>,
     th_label: &MonoTextStyle<'_, BinaryColor>,
 ) -> Result<(), core::convert::Infallible> {
-    for y in [Y_SEP_TOP, Y_SEP_CLOCK, Y_SEP_TH, Y_SEP_STATS] {
+    // Y_SEP_TH 不画:sparkline 下方紧挨一条直线容易被读成曲线 axis,内容跳跃(曲线→文字)本身足够区分
+    for y in [Y_SEP_TOP, Y_SEP_CLOCK, Y_SEP_STATS] {
         Line::new(Point::new(6, y), Point::new(WIDTH as i32 - 6, y))
             .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
             .draw(target)?;
@@ -285,14 +293,14 @@ fn render_top_bar(
         .unwrap_or("---- -- -- ---");
     Text::with_baseline(date, Point::new(10, 7), *tiny, Baseline::Top).draw(target)?;
 
-    // 右:电池 / USB + 版本
+    // 右:电池 / USB(版本挪去 /settings 页,日常无意义)
     let mut right: heapless::String<24> = heapless::String::new();
     match state.battery {
         Some((mv, pct)) => {
-            let _ = write!(right, "{}% {}.{:02}V v{}", pct, mv / 1000, (mv % 1000) / 10, state.fw_version);
+            let _ = write!(right, "{}% {}.{:02}V", pct, mv / 1000, (mv % 1000) / 10);
         }
         None => {
-            let _ = write!(right, "USB v{}", state.fw_version);
+            let _ = right.push_str("USB");
         }
     }
     let right_px = right.len() as i32 * 9;
@@ -367,38 +375,45 @@ fn render_clock(
 
 // ============================================================================
 // 温湿度 y=108..154
+// 值占中线,无标签(C/%/° 已明示单位)。PROFONT_24 字宽 ~14 px,在数字右侧画
+// 5x5 空心圆当 ° 符号,后接 "C"。
 // ============================================================================
 fn render_th(
     target: &mut Display<'_>,
     state: &AppState,
     val: &MonoTextStyle<'_, BinaryColor>,
-    label: &MonoTextStyle<'_, BinaryColor>,
+    _label: &MonoTextStyle<'_, BinaryColor>,
 ) -> Result<(), core::convert::Infallible> {
     let center_l = WIDTH as i32 / 4;
     let center_r = WIDTH as i32 * 3 / 4;
-    let y_val = Y_SEP_CLOCK + 18;
-    let y_lbl = Y_SEP_TH - 8;
+    // 值固定在 TH 段上部;下面 ~60px 给 sparkline
+    let y_mid = 128;
     let style = embedded_graphics::text::TextStyleBuilder::new()
         .alignment(Alignment::Center)
         .baseline(Baseline::Middle)
         .build();
 
-    // T
-    let mut t_txt: heapless::String<16> = heapless::String::new();
+    // ---- T:"28.5 °C" 形式,° 靠 Circle 画 ----
+    let mut t_txt: heapless::String<8> = heapless::String::new();
     match state.temperature_c {
         Some(t) => {
-            let _ = write!(t_txt, "{:.1} deg C", t);
+            let _ = write!(t_txt, "{:.1} C", t);
         }
         None => {
-            let _ = t_txt.push_str("--.- deg C");
+            let _ = t_txt.push_str("--.- C");
         }
     }
-    Text::with_text_style(&t_txt, Point::new(center_l, y_val), *val, style).draw(target)?;
-    Text::with_text_style("TEMPERATURE", Point::new(center_l, y_lbl), *label, style)
+    // 整体居中渲染"28.5 C",然后在空格位置叠画 °
+    Text::with_text_style(&t_txt, Point::new(center_l, y_mid), *val, style).draw(target)?;
+    // "28.5 C" 共 6 字符,空格是第 5 个(索引 4);文字整体中心=center_l,
+    // 空格中心相对文字中心偏移:(4 - (6-1)/2.0) * 14 = 21 px
+    let space_cx = center_l + 21;
+    Circle::new(Point::new(space_cx - 3, y_mid - 11), 6)
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
         .draw(target)?;
 
-    // RH
-    let mut h_txt: heapless::String<16> = heapless::String::new();
+    // ---- RH:"57.3 %" ----
+    let mut h_txt: heapless::String<8> = heapless::String::new();
     match state.humidity_pct {
         Some(h) => {
             let _ = write!(h_txt, "{:.1} %", h);
@@ -407,9 +422,29 @@ fn render_th(
             let _ = h_txt.push_str("--.- %");
         }
     }
-    Text::with_text_style(&h_txt, Point::new(center_r, y_val), *val, style).draw(target)?;
-    Text::with_text_style("HUMIDITY", Point::new(center_r, y_lbl), *label, style)
-        .draw(target)?;
+    Text::with_text_style(&h_txt, Point::new(center_r, y_mid), *val, style).draw(target)?;
+
+    // ---- mini sparkline:T 和 RH 各画 10 分钟趋势线,高度 28 ----
+    let spark_y = 146;
+    let spark_h = 58u32;
+    let spark_w = (WIDTH as i32 / 2 - 20) as u32;
+    let t_x = 10;
+    let rh_x = WIDTH as i32 / 2 + 10;
+    // 最小动态范围:温度 0.1°C / 湿度 0.5%;亚度级变化也能看到
+    draw_mini_spark(
+        target,
+        &state.temp_hist,
+        Point::new(t_x, spark_y),
+        Size::new(spark_w, spark_h),
+        0.1,
+    )?;
+    draw_mini_spark(
+        target,
+        &state.rh_hist,
+        Point::new(rh_x, spark_y),
+        Size::new(spark_w, spark_h),
+        0.5,
+    )?;
 
     // 中间竖分
     Line::new(
@@ -421,66 +456,146 @@ fn render_th(
     Ok(())
 }
 
+/// 从 HistoryBuffer 拉 values,以"中值 ± max(实际半幅, min_span/2)"为 y 范围
+/// 画 sparkline。min_span 大于实际波动时曲线会显扁(真"平稳")。
+fn draw_mini_spark(
+    target: &mut Display<'_>,
+    hist: &heapless::HistoryBuffer<f32, 120>,
+    origin: Point,
+    size: Size,
+    min_span: f32,
+) -> Result<(), core::convert::Infallible> {
+    let mut vals: heapless::Vec<f32, 120> = heapless::Vec::new();
+    for v in hist.oldest_ordered() {
+        let _ = vals.push(*v);
+    }
+    if vals.len() < 2 {
+        let y = origin.y + size.height as i32 - 1;
+        Line::new(
+            Point::new(origin.x, y),
+            Point::new(origin.x + size.width as i32 - 1, y),
+        )
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+        .draw(target)?;
+        return Ok(());
+    }
+    let mut lo = f32::MAX;
+    let mut hi = f32::MIN;
+    for v in vals.iter() {
+        if *v < lo {
+            lo = *v;
+        }
+        if *v > hi {
+            hi = *v;
+        }
+    }
+    let mid = (hi + lo) / 2.0;
+    // 保底半幅 = min_span/2;实际半幅更大才撑开
+    let half = ((hi - lo) / 2.0).max(min_span / 2.0);
+    draw_sparkline(target, origin, size, &vals, mid - half, mid + half)
+}
+
 // ============================================================================
-// 系统指标 3 行 y=154..232(每行 ~24px,FONT_9X18_BOLD)
+// 系统指标 y=154..232(78px):两行带进度条(APP/HEAP)+ 一行 UP/RST/IDF
+// 用 micro(FONT_6X10,高 10px)够清晰又腾得开空间,bar 彻底不会和文字咬。
+// 预算:
+//   154 分隔
+//   160..170 text1(10)
+//   174..180 bar1(6)
+//   186..196 text2(10)
+//   200..206 bar2(6)
+//   212..222 text3(10)
+//   232 分隔
 // ============================================================================
 fn render_stats(
     target: &mut Display<'_>,
     state: &AppState,
-    tiny: &MonoTextStyle<'_, BinaryColor>,
+    _tiny: &MonoTextStyle<'_, BinaryColor>,
 ) -> Result<(), core::convert::Infallible> {
+    let micro = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
     let left_x = 10;
-    let line1_y = Y_SEP_TH + 6;
-    let line2_y = line1_y + 24;
-    let line3_y = line2_y + 24;
+    // stats 段 210..276(66px),紧凑但清楚
+    let line1_y = 216;
+    let bar1_y = 228;
+    let line2_y = 238;
+    let bar2_y = 250;
+    let line3_y = 260;
 
-    // Line 1:CHIP 温  |  HEAP free/total
-    let mut l1: heapless::String<48> = heapless::String::new();
-    match state.chip_temp_c {
-        Some(c) => {
-            let _ = write!(l1, "CHIP {:.1}C", c);
-        }
-        None => {
-            let _ = l1.push_str("CHIP --.-C");
-        }
+    let bar_w = WIDTH as i32 - 2 * left_x;
+    let bar_h = 6i32;
+
+    // Line 1: APP 镜像 / 分区容量
+    let app_pct = if state.app_part_size > 0 && state.app_used > 0 {
+        (((state.app_used as u64) * 100) / (state.app_part_size as u64)).min(100) as u32
+    } else {
+        0
+    };
+    let mut l1: heapless::String<56> = heapless::String::new();
+    if state.app_part_size > 0 && state.app_used > 0 {
+        let _ = write!(
+            l1,
+            "APP  {} / {} MB  {}%",
+            fmt_mb(state.app_used),
+            fmt_mb(state.app_part_size),
+            app_pct,
+        );
+    } else {
+        let _ = write!(l1, "FLASH  chip 16.0 MB");
     }
-    let _ = write!(
-        l1,
-        "  HEAP {}/{}K  STK {:.1}K",
-        state.heap_free / 1024,
-        state.heap_total / 1024,
-        state.stack_hwm_bytes as f32 / 1024.0
-    );
-    Text::with_baseline(&l1, Point::new(left_x, line1_y), *tiny, Baseline::Top)
-        .draw(target)?;
+    Text::with_baseline(&l1, Point::new(left_x, line1_y), micro, Baseline::Top).draw(target)?;
+    if state.app_part_size > 0 && state.app_used > 0 {
+        draw_progress_bar(target, left_x, bar1_y, bar_w, bar_h, app_pct)?;
+    }
 
-    // Line 2:PSRAM + UP
+    // Line 2: HEAP
+    let heap_used = state.heap_total.saturating_sub(state.heap_free);
+    let heap_pct = if state.heap_total > 0 {
+        ((heap_used as u64 * 100) / state.heap_total as u64).min(100) as u32
+    } else {
+        0
+    };
     let mut l2: heapless::String<48> = heapless::String::new();
     let _ = write!(
         l2,
-        "PSRAM {}/{}K",
-        state.psram_free / 1024,
-        state.psram_total / 1024
+        "HEAP  {} / {} KB  {}%",
+        heap_used / 1024,
+        state.heap_total / 1024,
+        heap_pct,
     );
+    Text::with_baseline(&l2, Point::new(left_x, line2_y), micro, Baseline::Top).draw(target)?;
+    draw_progress_bar(target, left_x, bar2_y, bar_w, bar_h, heap_pct)?;
+
+    // Line 3: UP + RST + IDF
     let up_h = state.uptime_secs / 3600;
     let up_m = (state.uptime_secs / 60) % 60;
     let up_s = state.uptime_secs % 60;
-    let _ = write!(l2, "  UP {:02}:{:02}:{:02}", up_h, up_m, up_s);
-    Text::with_baseline(&l2, Point::new(left_x, line2_y), *tiny, Baseline::Top)
-        .draw(target)?;
-
-    // Line 3:IDF 版本 + 复位原因 + MAC + 最低堆
-    let mut l3: heapless::String<48> = heapless::String::new();
+    let mut l3: heapless::String<56> = heapless::String::new();
     let _ = write!(
         l3,
-        "IDF {}  RST {}  MAC {}  LO {}K",
-        state.idf_version,
-        state.reset_reason,
-        state.mac_suffix,
-        state.heap_min_ever / 1024
+        "UP {:02}:{:02}:{:02}  RST {}  IDF {}",
+        up_h, up_m, up_s, state.reset_reason, state.idf_version
     );
-    Text::with_baseline(&l3, Point::new(left_x, line3_y), *tiny, Baseline::Top)
+    Text::with_baseline(&l3, Point::new(left_x, line3_y), micro, Baseline::Top).draw(target)?;
+    Ok(())
+}
+
+fn draw_progress_bar(
+    target: &mut Display<'_>,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    pct: u32,
+) -> Result<(), core::convert::Infallible> {
+    Rectangle::new(Point::new(x, y), Size::new(w as u32, h as u32))
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(target)?;
+    let fill_w = ((w - 2) as u64 * pct as u64 / 100) as u32;
+    if fill_w > 0 {
+        Rectangle::new(Point::new(x + 1, y + 1), Size::new(fill_w, (h - 2) as u32))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(target)?;
+    }
     Ok(())
 }
 
@@ -510,17 +625,16 @@ fn render_bottom_bar(
         return Ok(());
     }
 
-    let mut text: heapless::String<80> = heapless::String::new();
-    if !state.wifi_ssid.is_empty() {
-        let _ = text.push_str(&state.wifi_ssid);
-    } else {
-        let _ = text.push_str("WiFi");
-    }
+    // 瘦身:去掉 SSID(已在 /settings 可见),只保留 IP + RSSI
+    let mut text: heapless::String<48> = heapless::String::new();
     if let Some([a, b, c, d]) = state.ip_octets {
-        let _ = write!(text, " - {}.{}.{}.{}", a, b, c, d);
+        let _ = write!(text, "{}.{}.{}.{}", a, b, c, d);
     }
     if let Some(r) = state.rssi {
-        let _ = write!(text, " - {} dBm", r);
+        if !text.is_empty() {
+            let _ = text.push_str("  ");
+        }
+        let _ = write!(text, "{} dBm", r);
     }
 
     let bars_w = 20;
@@ -575,189 +689,7 @@ fn draw_wifi_bars(
     Ok(())
 }
 
-// ============================================================================
-// History 页 - 温湿度 10 min sparkline
-// ============================================================================
-
-fn render_history(
-    target: &mut Display<'_>,
-    state: &AppState,
-    tiny: &MonoTextStyle<'_, BinaryColor>,
-    micro: &MonoTextStyle<'_, BinaryColor>,
-    header: &MonoTextStyle<'_, BinaryColor>,
-) -> Result<(), core::convert::Infallible> {
-    // 页头
-    Text::with_baseline(
-        "ENVIRONMENT HISTORY",
-        Point::new(14, 6),
-        *tiny,
-        Baseline::Top,
-    )
-    .draw(target)?;
-    let hint = "10 min @ 5s";
-    let hint_px = hint.len() as i32 * 6;
-    Text::with_baseline(
-        hint,
-        Point::new(WIDTH as i32 - 14 - hint_px, 10),
-        *micro,
-        Baseline::Top,
-    )
-    .draw(target)?;
-    Line::new(Point::new(6, 28), Point::new(WIDTH as i32 - 6, 28))
-        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-        .draw(target)?;
-
-    // 温度图
-    render_sparkline_block(
-        target,
-        "TEMP",
-        state.temperature_c,
-        "C",
-        &state.temp_hist,
-        Rectangle::new(Point::new(10, 32), Size::new((WIDTH as u32) - 20, 124)),
-        tiny,
-        micro,
-        header,
-    )?;
-
-    // 湿度图
-    render_sparkline_block(
-        target,
-        "RH",
-        state.humidity_pct,
-        "%",
-        &state.rh_hist,
-        Rectangle::new(Point::new(10, 160), Size::new((WIDTH as u32) - 20, 124)),
-        tiny,
-        micro,
-        header,
-    )?;
-
-    Ok(())
-}
-
-fn render_sparkline_block(
-    target: &mut Display<'_>,
-    title: &str,
-    current: Option<f32>,
-    unit: &str,
-    hist: &heapless::HistoryBuffer<f32, 120>,
-    bounds: Rectangle,
-    tiny: &MonoTextStyle<'_, BinaryColor>,
-    micro: &MonoTextStyle<'_, BinaryColor>,
-    header: &MonoTextStyle<'_, BinaryColor>,
-) -> Result<(), core::convert::Infallible> {
-    // 外框
-    bounds
-        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-        .draw(target)?;
-
-    // 头部标签条:反色横条
-    let head_h = 18u32;
-    let head = Rectangle::new(bounds.top_left, Size::new(bounds.size.width, head_h));
-    head.into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-        .draw(target)?;
-    let label_style = MonoTextStyle::new(&FONT_9X18_BOLD, BinaryColor::Off);
-    Text::with_baseline(
-        title,
-        Point::new(bounds.top_left.x + 8, bounds.top_left.y + 1),
-        label_style,
-        Baseline::Top,
-    )
-    .draw(target)?;
-
-    // 当前值大字(右上)
-    let mut cur_txt: heapless::String<16> = heapless::String::new();
-    match current {
-        Some(v) => {
-            let _ = core::fmt::write(&mut cur_txt, format_args!("{:.1} {}", v, unit));
-        }
-        None => {
-            let _ = cur_txt.push_str("--.-");
-        }
-    }
-    let cur_px = cur_txt.len() as i32 * 9;
-    Text::with_baseline(
-        &cur_txt,
-        Point::new(
-            bounds.top_left.x + bounds.size.width as i32 - cur_px - 8,
-            bounds.top_left.y + 22,
-        ),
-        *header,
-        Baseline::Top,
-    )
-    .draw(target)?;
-
-    // 数据统计:min/max/avg
-    let mut values: heapless::Vec<f32, 120> = heapless::Vec::new();
-    for v in hist.oldest_ordered() {
-        let _ = values.push(*v);
-    }
-    let (vmin, vmax, vavg) = if values.is_empty() {
-        (0.0f32, 0.0, 0.0)
-    } else {
-        let mut lo = f32::MAX;
-        let mut hi = f32::MIN;
-        let mut sum = 0.0f32;
-        for v in values.iter() {
-            if *v < lo {
-                lo = *v;
-            }
-            if *v > hi {
-                hi = *v;
-            }
-            sum += *v;
-        }
-        (lo, hi, sum / values.len() as f32)
-    };
-
-    // 左侧:min/max/avg 小字
-    let mut stats: heapless::String<32> = heapless::String::new();
-    if !values.is_empty() {
-        let _ = core::fmt::write(
-            &mut stats,
-            format_args!("min {:.1}  max {:.1}  avg {:.1}", vmin, vmax, vavg),
-        );
-    } else {
-        let _ = stats.push_str("no data yet");
-    }
-    Text::with_baseline(
-        &stats,
-        Point::new(bounds.top_left.x + 8, bounds.top_left.y + 28),
-        *micro,
-        Baseline::Top,
-    )
-    .draw(target)?;
-    let _ = tiny;
-
-    // 图表区域:y=top+48 到 bottom-4
-    let chart_x = bounds.top_left.x + 8;
-    let chart_y = bounds.top_left.y + 48;
-    let chart_w = bounds.size.width as i32 - 16;
-    let chart_h = bounds.size.height as i32 - 48 - 6;
-    if values.len() >= 2 {
-        draw_sparkline(
-            target,
-            Point::new(chart_x, chart_y),
-            Size::new(chart_w as u32, chart_h as u32),
-            &values,
-            vmin,
-            vmax,
-        )?;
-    } else {
-        // 样本不够画图,画 baseline
-        Line::new(
-            Point::new(chart_x, chart_y + chart_h / 2),
-            Point::new(chart_x + chart_w, chart_y + chart_h / 2),
-        )
-        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-        .draw(target)?;
-    }
-
-    Ok(())
-}
-
-/// 把 `values` 等间距映射到 bounding box 内,画 polyline
+/// 把 `values` 等间距映射到 bounding box 内,画 polyline。
 fn draw_sparkline(
     target: &mut Display<'_>,
     origin: Point,
@@ -774,15 +706,6 @@ fn draw_sparkline(
     let h = size.height as i32;
     // vmin==vmax 时避免除零
     let range = (vmax - vmin).max(0.1);
-
-    // 基准线(0 位等价,这里取中点作轴)
-    let axis_y = origin.y + h - 1;
-    Line::new(
-        Point::new(origin.x, axis_y),
-        Point::new(origin.x + w - 1, axis_y),
-    )
-    .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-    .draw(target)?;
 
     let to_point = |i: i32, v: f32| -> Point {
         let x = origin.x + (i * (w - 1)) / (n - 1);
@@ -825,7 +748,6 @@ fn render_github(
     header: &MonoTextStyle<'_, BinaryColor>,
     _big: &MonoTextStyle<'_, BinaryColor>,
 ) -> Result<(), core::convert::Infallible> {
-    let cx = WIDTH as i32 / 2;
     let center = embedded_graphics::text::TextStyleBuilder::new()
         .alignment(Alignment::Center)
         .baseline(Baseline::Middle)
@@ -1031,6 +953,17 @@ fn render_github(
     }
 
     Ok(())
+}
+
+/// 把字节数格式化成"1.7"或"16.0"这种一位小数 MB 数。
+fn fmt_mb(bytes: u32) -> heapless::String<8> {
+    let mut s: heapless::String<8> = heapless::String::new();
+    // 用整数算法避免 f32 开销和精度误差:(bytes * 10 / 1024 / 1024) → 得到 *.1 一位小数的整数
+    let tenths = ((bytes as u64) * 10 / (1024 * 1024)) as u32;
+    let whole = tenths / 10;
+    let frac = tenths % 10;
+    let _ = core::fmt::write(&mut s, format_args!("{}.{}", whole, frac));
+    s
 }
 
 fn truncate_chars(src: &str, max_chars: usize) -> heapless::String<80> {
