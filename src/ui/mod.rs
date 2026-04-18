@@ -913,7 +913,7 @@ fn render_github(
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(target)?;
 
-    // ===== LATEST y=170..202 =====
+    // ===== LATEST y=170..228 (58px,含 header + event 大字 + detail 小字) =====
     Text::with_baseline("LATEST", Point::new(14, 170), *micro, Baseline::Top).draw(target)?;
     // 右上:相对时间 "5m ago"
     if state.last_event_at_epoch > 0 {
@@ -938,6 +938,12 @@ fn render_github(
     if state.activity_valid && !state.last_event_line.is_empty() {
         let line_trunc = truncate_chars(&state.last_event_line, 40);
         Text::with_baseline(&line_trunc, Point::new(14, 184), *tiny, Baseline::Top).draw(target)?;
+        // 下方小字:commit msg / comment body / PR title 等上下文
+        if !state.last_event_detail.is_empty() {
+            let detail = truncate_chars(&state.last_event_detail, 62);
+            Text::with_baseline(&detail, Point::new(14, 208), *micro, Baseline::Top)
+                .draw(target)?;
+        }
     } else if !state.activity_error.is_empty() {
         let err = truncate_chars(&state.activity_error, 60);
         Text::with_baseline(&err, Point::new(14, 186), *micro, Baseline::Top).draw(target)?;
@@ -946,31 +952,34 @@ fn render_github(
             .draw(target)?;
     }
 
-    // ===== 分隔 y=208 =====
-    Line::new(Point::new(14, 208), Point::new(WIDTH as i32 - 14, 208))
+    // ===== 分隔 y=232 =====
+    Line::new(Point::new(14, 232), Point::new(WIDTH as i32 - 14, 232))
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(target)?;
 
-    // ===== UNREAD y=212..282 =====
-    // 三点指示 x≈370..390,y≈263..269;文字 x<=346 保证不重叠
-    let mut hdr: heapless::String<24> = heapless::String::new();
+    // ===== UNREAD y=236..280(44px,单行:"UNREAD (N) repo" + title 一行) =====
+    // 翻页点 x≈370..390, y≈285..291(Y_SEP_STATS=276 时)
+    let mut hdr: heapless::String<80> = heapless::String::new();
     if state.notif_valid {
         let _ = core::fmt::write(&mut hdr, format_args!("UNREAD ({})", state.notif_count));
     } else {
         let _ = hdr.push_str("UNREAD");
     }
-    Text::with_baseline(&hdr, Point::new(14, 214), *micro, Baseline::Top).draw(target)?;
+    // 头行加上 repo:把之前独立一行的 repo 并进 header 省掉一整行
+    if state.notif_valid && state.notif_count > 0 && !state.notif_top_repo.is_empty() {
+        let _ = core::fmt::write(&mut hdr, format_args!("  {}", state.notif_top_repo));
+    }
+    let hdr_trunc = truncate_chars(&hdr, 60);
+    Text::with_baseline(&hdr_trunc, Point::new(14, 240), *micro, Baseline::Top).draw(target)?;
 
     if state.notif_valid && state.notif_count == 0 {
-        Text::with_baseline("all caught up", Point::new(14, 234), *tiny, Baseline::Top)
+        Text::with_baseline("all caught up", Point::new(14, 256), *tiny, Baseline::Top)
             .draw(target)?;
     } else if state.notif_valid && !state.notif_top_title.is_empty() {
-        let repo = truncate_chars(&state.notif_top_repo, 37);
-        Text::with_baseline(&repo, Point::new(14, 232), *tiny, Baseline::Top).draw(target)?;
         let title = truncate_chars(&state.notif_top_title, 36);
-        Text::with_baseline(&title, Point::new(14, 258), *tiny, Baseline::Top).draw(target)?;
+        Text::with_baseline(&title, Point::new(14, 256), *tiny, Baseline::Top).draw(target)?;
     } else {
-        Text::with_baseline("(fetching...)", Point::new(14, 234), *tiny, Baseline::Top)
+        Text::with_baseline("(fetching...)", Point::new(14, 256), *tiny, Baseline::Top)
             .draw(target)?;
     }
 

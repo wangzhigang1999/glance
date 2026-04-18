@@ -128,6 +128,11 @@ struct Payload {
     release: Option<Named>,
     #[serde(default)]
     ref_type: Option<String>,
+    // PushEvent 兜底:commits 有时缺失,退回 ref/head 展示
+    #[serde(default, rename = "ref")]
+    git_ref: Option<String>,
+    #[serde(default)]
+    head: Option<String>,
 }
 #[derive(serde::Deserialize)]
 struct Commit {
@@ -169,12 +174,34 @@ fn parse_last_event(body: &str) -> Option<(String, String, u64)> {
 
     let (line, detail) = match ev.ty.as_str() {
         "PushEvent" => {
-            // 最后一条 commit 的 message 首行
+            // 优先取最后一条 commit 的 message 首行;API 省略 commits[] 时退回 "branch @ shortsha"
             let detail = pl
                 .commits
-                .and_then(|cs| cs.into_iter().last())
+                .as_ref()
+                .and_then(|cs| cs.iter().last())
                 .map(|c| first_line(&c.message))
-                .unwrap_or_default();
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    let branch = pl
+                        .git_ref
+                        .as_deref()
+                        .and_then(|r| r.strip_prefix("refs/heads/"))
+                        .unwrap_or_else(|| pl.git_ref.as_deref().unwrap_or(""));
+                    let head: String = pl
+                        .head
+                        .as_deref()
+                        .unwrap_or("")
+                        .chars()
+                        .take(7)
+                        .collect();
+                    if !branch.is_empty() && !head.is_empty() {
+                        format!("{} @ {}", branch, head)
+                    } else if !head.is_empty() {
+                        head
+                    } else {
+                        String::new()
+                    }
+                });
             (format!("pushed to {}", repo), detail)
         }
         "PullRequestEvent" => {
