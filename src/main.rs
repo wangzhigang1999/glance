@@ -18,6 +18,7 @@ mod hw;
 mod net;
 mod ui;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -36,7 +37,10 @@ use crate::hw::button::Button;
 use crate::hw::chip_temp::ChipTemp;
 use crate::hw::shtc3::Shtc3;
 use crate::hw::system::{mac_suffix, read_sys_stats};
+use crate::net::activity::{self, Activity};
 use crate::net::github::{self, ContribData};
+use crate::net::notifications::{self, NotifSummary};
+use crate::net::screen_http;
 use crate::net::{
     format_local_date, format_local_hms, CredsStore, ProvStatus, Provisioner, Sntp, WifiCreds,
     WifiManager,
@@ -46,6 +50,8 @@ use crate::ui::{AppState, Page, GITHUB_USER};
 const FW_VERSION: &str = env!("CARGO_PKG_VERSION");
 // ESP_IDF_VERSION 从 .cargo/config.toml [env] 注入
 const IDF_VERSION: &str = env!("ESP_IDF_VERSION");
+// 编译时注入的 GitHub PAT(scope=notifications);未设置则禁用通知拉取
+const GITHUB_TOKEN: Option<&'static str> = option_env!("GITHUB_TOKEN");
 
 /// 中国时区 UTC+8
 const TZ_OFFSET_SECS: i64 = 8 * 3600;
@@ -79,7 +85,8 @@ fn main() -> anyhow::Result<()> {
     let mut display = Display::new(st7305);
     display.init()?;
     log::info!("Display ready (400x300 landscape)");
-    display.splash_flash(2)?;
+    // 开机除斑:8 次黑-白翻转,~6.4s,消除反射式 LCD 的液晶分子残影/黑斑
+    display.splash_flash(8)?;
 
     let mut state = AppState::default();
     let _ = ui::render(&mut display, &state, Page::Dashboard);
@@ -97,9 +104,11 @@ fn main() -> anyhow::Result<()> {
     log::info!("Init battery ADC on GPIO4");
     let mut battery = Battery::new(peripherals.adc1, peripherals.pins.gpio4)?;
 
-    // ---- KEY 按钮(GPIO18),用于切页 ----
-    log::info!("Init KEY button on GPIO18");
-    let mut button = Button::new(AnyIOPin::from(peripherals.pins.gpio18))?;
+    // ---- 按钮:BOOT(GPIO0) + KEY(GPIO18),任一按下都切页 ----
+    // 板上三键:BOOT / KEY / PWR(独立电源IC,长按关机)
+    log::info!("Init buttons: BOOT=GPIO0, KEY=GPIO18");
+    let mut btn_boot = Button::new(AnyIOPin::from(peripherals.pins.gpio0))?;
+    let mut btn_key = Button::new(AnyIOPin::from(peripherals.pins.gpio18))?;
 
     // ---- 芯片内置温度传感器 ----
     log::info!("Init chip internal temp sensor");
@@ -148,9 +157,54 @@ fn main() -> anyhow::Result<()> {
     // _sntp 必须保持在作用域内,否则 drop 会 sntp_stop() 终结对时
     let _sntp = Sntp::start()?;
 
-    // ---- GitHub 贡献数据:后台线程 6h 拉一次,共享 Arc<Mutex<Option>> ----
+    // ---- GitHub 贡献数据:GraphQL,需要 token ----
     let contrib_shared: Arc<Mutex<Option<ContribData>>> = Arc::new(Mutex::new(None));
-    github::spawn_fetcher(GITHUB_USER, contrib_shared.clone());
+    let contrib_err_shared: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    match GITHUB_TOKEN {
+        Some(tok) if !tok.is_empty() => {
+            github::spawn_fetcher(
+                GITHUB_USER,
+                tok,
+                contrib_shared.clone(),
+                contrib_err_shared.clone(),
+            );
+        }
+        _ => {
+            log::warn!("GitHub contribution: no token, skipped");
+            if let Ok(mut e) = contrib_err_shared.lock() {
+                *e = "no token".into();
+            }
+        }
+    }
+
+    // ---- 屏幕镜像 HTTP 服务 ----
+    let screen_shared = screen_http::new_shared_fb();
+    let http_next_flag = Arc::new(AtomicBool::new(false));
+    let _screen_server = match screen_http::start(screen_shared.clone(), http_next_flag.clone()) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            log::warn!("Screen HTTP server failed to start: {e:#}");
+            None
+        }
+    };
+
+    // ---- GitHub Notifications + Activity:共用 token,错位启动避免 TLS 挤 socket ----
+    let notif_shared: Arc<Mutex<Option<NotifSummary>>> = Arc::new(Mutex::new(None));
+    let activity_shared: Arc<Mutex<Option<Activity>>> = Arc::new(Mutex::new(None));
+    let activity_err_shared: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    match GITHUB_TOKEN {
+        Some(tok) if !tok.is_empty() => {
+            notifications::spawn_fetcher(tok, notif_shared.clone());
+            activity::spawn_fetcher(
+                GITHUB_USER,
+                tok,
+                activity_shared.clone(),
+                activity_err_shared.clone(),
+            );
+            log::info!("GH Notifications + Activity: fetchers spawned");
+        }
+        _ => log::info!("GH Notifications + Activity: no token, skipped"),
+    }
     // 这里不阻塞,主循环里每次直接看 SystemTime 是否 > 2020 来判"是否已同步"
     // 理由:sntp_get_sync_status 在 poll 周期内会从 COMPLETED 翻回 IN_PROGRESS,不稳定
 
@@ -164,9 +218,16 @@ fn main() -> anyhow::Result<()> {
     const REFRESH_PERIOD: Duration = Duration::from_secs(5);
 
     loop {
-        let page_changed = if button.poll_pressed() {
+        // 扫两个按钮 + HTTP /next 请求,任一触发切页。
+        let boot_edge = btn_boot.poll_pressed();
+        let key_edge = btn_key.poll_pressed();
+        let http_next = http_next_flag.swap(false, Ordering::Relaxed);
+        let page_changed = if boot_edge || key_edge || http_next {
             page = page.next();
-            log::info!("KEY pressed, switched to {:?}", page);
+            log::info!(
+                "Page switch (BOOT={} KEY={} HTTP={}) -> {:?}",
+                boot_edge, key_edge, http_next, page
+            );
             true
         } else {
             false
@@ -224,21 +285,95 @@ fn main() -> anyhow::Result<()> {
             // GitHub 贡献:从共享 Arc 复制到 state
             if let Ok(g) = contrib_shared.lock() {
                 if let Some(data) = g.as_ref() {
-                    // 取最新的 ≤364 天,7 行 × N 列
+                    // 取最新的 ≤371 天
                     let take_n = data.levels.len().min(state.contrib.len());
                     let skip = data.levels.len().saturating_sub(take_n);
                     for (i, lvl) in data.levels.iter().skip(skip).take(take_n).enumerate() {
                         state.contrib[i] = *lvl;
+                    }
+                    // counts 同样对齐:长度应与 levels 一致;若不一致按较短者取
+                    let c_take = data.counts.len().min(take_n);
+                    let c_skip = data.counts.len().saturating_sub(c_take);
+                    for (i, n) in data.counts.iter().skip(c_skip).take(c_take).enumerate() {
+                        state.contrib_counts[i] = (*n).min(u16::MAX as u32) as u16;
                     }
                     state.contrib_weeks = ((take_n + 6) / 7) as u16;
                     state.contrib_valid = take_n > 0;
                     state.contrib_total_year = data.total_year;
                 }
             }
+            // 贡献错误信息(若有)
+            if let Ok(e) = contrib_err_shared.lock() {
+                state.contrib_error.clear();
+                for c in e.chars() {
+                    if state.contrib_error.push(c).is_err() {
+                        break;
+                    }
+                }
+            }
+
+            // GitHub Notifications:复制到 state(只取最新一条)
+            if let Ok(g) = notif_shared.lock() {
+                if let Some(s) = g.as_ref() {
+                    state.notif_count = s.count as u32;
+                    state.notif_top_title.clear();
+                    state.notif_top_repo.clear();
+                    if let Some(first) = s.items.first() {
+                        for c in first.title.chars() {
+                            if state.notif_top_title.push(c).is_err() {
+                                break;
+                            }
+                        }
+                        for c in first.repo.chars() {
+                            if state.notif_top_repo.push(c).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    state.notif_valid = true;
+                }
+            }
+
+            // GitHub Activity:复制到 state
+            if let Ok(g) = activity_shared.lock() {
+                if let Some(a) = g.as_ref() {
+                    state.last_event_line.clear();
+                    if let Some(l) = a.last_line.as_deref() {
+                        for c in l.chars() {
+                            if state.last_event_line.push(c).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    state.last_event_detail.clear();
+                    if let Some(d) = a.last_detail.as_deref() {
+                        for c in d.chars() {
+                            if state.last_event_detail.push(c).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    state.open_prs = a.open_prs;
+                    state.activity_valid = true;
+                }
+            }
+            if let Ok(e) = activity_err_shared.lock() {
+                state.activity_error.clear();
+                for c in e.chars() {
+                    if state.activity_error.push(c).is_err() {
+                        break;
+                    }
+                }
+            }
 
             let _ = ui::render(&mut display, &state, page);
             if let Err(e) = display.flush() {
                 log::error!("Display flush failed: {e}");
+            }
+            // 镜像当前 fb 到共享 buffer 供 HTTP 镜屏读
+            if let Ok(mut guard) = screen_shared.lock() {
+                guard.clear();
+                guard.extend_from_slice(display.fb_raw());
             }
             last_refresh = Instant::now();
         }

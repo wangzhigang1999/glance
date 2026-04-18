@@ -78,11 +78,26 @@ pub struct AppState {
     pub temp_hist: heapless::HistoryBuffer<f32, 120>,
     pub rh_hist: heapless::HistoryBuffer<f32, 120>,
 
-    // GitHub 贡献活动(53 周 × 7 天 = 371 格),值 0..=4;`contrib_valid=false` 表示未加载
-    pub contrib: [u8; 371],
+    // GitHub 贡献活动(53 周 × 7 天 = 371 格),`contrib_valid=false` 表示未加载
+    pub contrib: [u8; 371],         // level 0..=4
+    pub contrib_counts: [u16; 371], // 当天 commit 数(per day)
     pub contrib_weeks: u16,
     pub contrib_valid: bool,
     pub contrib_total_year: u32,
+    pub contrib_error: heapless::String<80>, // 拉取失败最近一次错误,空=没错误
+
+    // GitHub Notifications(未读)
+    pub notif_count: u32,
+    pub notif_top_title: heapless::String<96>, // 最新一条 title
+    pub notif_top_repo: heapless::String<48>,  // 最新一条仓库 full_name
+    pub notif_valid: bool,
+
+    // GitHub 活动:最近一条 event 摘要 + 详情 + open PR 数
+    pub last_event_line: heapless::String<80>,
+    pub last_event_detail: heapless::String<96>,
+    pub open_prs: u32,
+    pub activity_valid: bool,
+    pub activity_error: heapless::String<80>,
 }
 
 impl Default for AppState {
@@ -115,9 +130,20 @@ impl Default for AppState {
             temp_hist: heapless::HistoryBuffer::new(),
             rh_hist: heapless::HistoryBuffer::new(),
             contrib: [0u8; 371],
+            contrib_counts: [0u16; 371],
             contrib_weeks: 0,
             contrib_valid: false,
             contrib_total_year: 0,
+            contrib_error: heapless::String::new(),
+            notif_count: 0,
+            notif_top_title: heapless::String::new(),
+            notif_top_repo: heapless::String::new(),
+            notif_valid: false,
+            last_event_line: heapless::String::new(),
+            last_event_detail: heapless::String::new(),
+            open_prs: 0,
+            activity_valid: false,
+            activity_error: heapless::String::new(),
         }
     }
 }
@@ -789,8 +815,6 @@ fn draw_sparkline(
 
 /// 用户 GitHub 身份。目前硬编码,未来可从 NVS / build.rs 注入。
 pub const GITHUB_USER: &str = "wangzhigang1999";
-pub const FULL_NAME: &str = "Zhigang Wang - Agent Oriented Programmer";
-pub const PROJECT_NAME: &str = "esp32-s3-rlcd";
 
 fn render_github(
     target: &mut Display<'_>,
@@ -798,7 +822,7 @@ fn render_github(
     tiny: &MonoTextStyle<'_, BinaryColor>,
     micro: &MonoTextStyle<'_, BinaryColor>,
     header: &MonoTextStyle<'_, BinaryColor>,
-    big: &MonoTextStyle<'_, BinaryColor>,
+    _big: &MonoTextStyle<'_, BinaryColor>,
 ) -> Result<(), core::convert::Infallible> {
     let cx = WIDTH as i32 / 2;
     let center = embedded_graphics::text::TextStyleBuilder::new()
@@ -806,183 +830,294 @@ fn render_github(
         .baseline(Baseline::Middle)
         .build();
 
-    // ===== 顶部:用户名 + 全名 =====
     let mut uname: heapless::String<40> = heapless::String::new();
     let _ = core::fmt::write(&mut uname, format_args!("@{}", GITHUB_USER));
-    Text::with_text_style(&uname, Point::new(cx, 20), *big, center).draw(target)?;
-    Text::with_text_style(FULL_NAME, Point::new(cx, 44), *header, center).draw(target)?;
 
-    // 分隔线
-    Line::new(Point::new(20, 58), Point::new(WIDTH as i32 - 20, 58))
-        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-        .draw(target)?;
-
-    // ===== 贡献热力图 =====
-    // 7 行 × N 列(默认 52),每格 5×5 + 1 间隙 = 6x6 总
-    // 整体居中
-    let cell = 5i32;
-    let gap = 1i32;
-    let step = cell + gap;
-    let weeks = state.contrib_weeks.min(53) as i32;
-    let grid_w = weeks * step - gap;
-    let grid_h = 7 * step - gap;
-    let grid_x = (WIDTH as i32 - grid_w) / 2;
-    let grid_y = 72;
-
-    Text::with_baseline(
-        "CONTRIBUTIONS (last 52 weeks)",
-        Point::new(20, 64),
-        *tiny,
-        Baseline::Top,
-    )
-    .draw(target)?;
-
-    // 若数据未加载,显示占位
-    if !state.contrib_valid || weeks == 0 {
-        let placeholder = "fetching GitHub activity...";
-        let w = placeholder.len() as i32 * 9;
+    // ===== 顶栏 y=0..30 =====
+    Text::with_baseline(&uname, Point::new(14, 7), *header, Baseline::Top).draw(target)?;
+    if state.contrib_valid && state.contrib_total_year > 0 {
+        let mut right: heapless::String<40> = heapless::String::new();
+        let _ = core::fmt::write(
+            &mut right,
+            format_args!("{} contributions this year", state.contrib_total_year),
+        );
+        let w = right.len() as i32 * 6;
         Text::with_baseline(
-            placeholder,
-            Point::new((WIDTH as i32 - w) / 2, grid_y + grid_h / 2 - 10),
-            *tiny,
+            &right,
+            Point::new(WIDTH as i32 - 14 - w, 17),
+            *micro,
             Baseline::Top,
         )
         .draw(target)?;
-        // 画空格框让布局稳
+    }
+    Line::new(Point::new(14, 32), Point::new(WIDTH as i32 - 14, 32))
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+        .draw(target)?;
+
+    // ===== 数据准备:最近 28 天 =====
+    const DAYS: usize = 28;
+    let valid_n = (state.contrib_weeks as usize) * 7;
+    let have = state.contrib_valid && valid_n >= DAYS;
+    let start = valid_n.saturating_sub(DAYS);
+    let mut commits: u32 = 0;
+    let mut active: u32 = 0;
+    let mut max_streak: u32 = 0;
+    let mut cur_streak: u32 = 0;
+    if have {
+        for i in 0..DAYS {
+            let lvl = state.contrib[start + i];
+            commits += state.contrib_counts[start + i] as u32;
+            if lvl > 0 {
+                active += 1;
+                cur_streak += 1;
+                if cur_streak > max_streak {
+                    max_streak = cur_streak;
+                }
+            } else {
+                cur_streak = 0;
+            }
+        }
+    }
+
+    // ===== 热力图 7 行 × 4 列(左半)=====
+    // cell 18×12, gap 2 → grid 78×96
+    const CELL_W: i32 = 18;
+    const CELL_H: i32 = 12;
+    const CELL_GAP: i32 = 2;
+    let col_step = CELL_W + CELL_GAP; // 20
+    let row_step = CELL_H + CELL_GAP; // 14
+    let grid_w = 4 * CELL_W + 3 * CELL_GAP; // 78
+    let grid_h = 7 * CELL_H + 6 * CELL_GAP; // 96
+    let grid_x = 40; // 左边 40 px 留给 Mon-Sun 行标
+    let grid_y = 60;
+
+    // 顶部列标 4w/3w/2w/1w
+    for (i, lbl) in ["4w", "3w", "2w", "1w"].iter().enumerate() {
+        let col_cx = grid_x + (i as i32) * col_step + CELL_W / 2;
+        let style = embedded_graphics::text::TextStyleBuilder::new()
+            .alignment(Alignment::Center)
+            .baseline(Baseline::Top)
+            .build();
+        Text::with_text_style(lbl, Point::new(col_cx, grid_y - 14), *micro, style).draw(target)?;
+    }
+
+    // 左侧行标 Mon-Sun
+    for (i, lbl) in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].iter().enumerate() {
+        let cy = grid_y + (i as i32) * row_step + CELL_H / 2;
+        let style = embedded_graphics::text::TextStyleBuilder::new()
+            .alignment(Alignment::Right)
+            .baseline(Baseline::Middle)
+            .build();
+        Text::with_text_style(lbl, Point::new(grid_x - 4, cy), *micro, style).draw(target)?;
+    }
+    // 格子
+    if have {
+        for week in 0..4 {
+            for day in 0..7 {
+                // 按时间顺序:第 week 列是第 w 个 7-天段,day 0..6 对应该段内索引
+                let idx = (week as usize) * 7 + (day as usize);
+                let level = state.contrib[start + idx];
+                let x = grid_x + week * col_step;
+                let y = grid_y + day * row_step;
+                draw_day_cell(target, Point::new(x, y), CELL_W as u32, CELL_H as u32, level)?;
+            }
+        }
+    } else {
+        // 占位框
         Rectangle::new(
             Point::new(grid_x, grid_y),
             Size::new(grid_w as u32, grid_h as u32),
         )
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(target)?;
-    } else {
-        for w in 0..weeks {
-            for d in 0..7 {
-                let idx = (w as usize) * 7 + (d as usize);
-                if idx >= state.contrib.len() {
-                    break;
-                }
-                let level = state.contrib[idx];
-                draw_contrib_cell(
-                    target,
-                    Point::new(grid_x + w * step, grid_y + d * step),
-                    cell as u32,
-                    level,
-                )?;
-            }
+        // 框内显示 fetching,错误消息显示在热力图右侧下方(用剩余空间)
+        Text::with_text_style(
+            "fetching",
+            Point::new(grid_x + grid_w / 2, grid_y + grid_h / 2),
+            *micro,
+            center,
+        )
+        .draw(target)?;
+        if !state.contrib_error.is_empty() {
+            let msg = truncate_chars(&state.contrib_error, 40);
+            // 画在右侧摘要区下方空位(y≈158 附近),覆盖"1 PR | ..."那行是可以的
+            // 更安全:画在左侧热力图下方一行(grid_y + grid_h + 4 = 160)
+            let err_y = grid_y + grid_h + 4;
+            Text::with_baseline(&msg, Point::new(14, err_y), *micro, Baseline::Top)
+                .draw(target)?;
         }
     }
 
-    // 热力图图例 y=grid_y+grid_h+8
-    let legend_y = grid_y + grid_h + 10;
-    let legend_x = grid_x;
-    Text::with_baseline("less", Point::new(legend_x, legend_y - 2), *micro, Baseline::Top)
+    // ===== 右侧摘要(右半)=====
+    let sx = 160i32;
+    Text::with_baseline("28-DAY SNAPSHOT", Point::new(sx, 46), *micro, Baseline::Top)
         .draw(target)?;
-    for (i, lvl) in [0u8, 1, 2, 3, 4].iter().enumerate() {
-        draw_contrib_cell(
-            target,
-            Point::new(legend_x + 28 + (i as i32) * step, legend_y),
-            cell as u32,
-            *lvl,
-        )?;
-    }
-    Text::with_baseline(
-        "more",
-        Point::new(legend_x + 28 + 5 * step + 4, legend_y - 2),
-        *micro,
-        Baseline::Top,
-    )
-    .draw(target)?;
-    // 右侧:年度总数
-    if state.contrib_valid && state.contrib_total_year > 0 {
-        let mut total_txt: heapless::String<32> = heapless::String::new();
-        let _ = core::fmt::write(
-            &mut total_txt,
-            format_args!("{} contribs last year", state.contrib_total_year),
-        );
-        let w = total_txt.len() as i32 * 6;
-        Text::with_baseline(
-            &total_txt,
-            Point::new(WIDTH as i32 - 20 - w, legend_y - 2),
-            *micro,
-            Baseline::Top,
-        )
+
+    let mut l1: heapless::String<24> = heapless::String::new();
+    let _ = core::fmt::write(&mut l1, format_args!("{} commits", commits));
+    Text::with_baseline(&l1, Point::new(sx, 64), *tiny, Baseline::Top).draw(target)?;
+
+    let mut l2: heapless::String<24> = heapless::String::new();
+    let _ = core::fmt::write(&mut l2, format_args!("{} active days", active));
+    Text::with_baseline(&l2, Point::new(sx, 86), *tiny, Baseline::Top).draw(target)?;
+
+    let mut l3: heapless::String<24> = heapless::String::new();
+    let _ = core::fmt::write(&mut l3, format_args!("{} day streak", max_streak));
+    Text::with_baseline(&l3, Point::new(sx, 108), *tiny, Baseline::Top).draw(target)?;
+
+    // 小分隔
+    Line::new(Point::new(sx, 132), Point::new(sx + 200, 132))
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(target)?;
+
+    // 合并 open PR + unread 到一行
+    let mut l4: heapless::String<32> = heapless::String::new();
+    let _ = core::fmt::write(
+        &mut l4,
+        format_args!("{} PR | {} unread", state.open_prs, state.notif_count),
+    );
+    Text::with_baseline(&l4, Point::new(sx, 138), *tiny, Baseline::Top).draw(target)?;
+
+    // ===== 分隔 y=164 =====
+    Line::new(Point::new(14, 164), Point::new(WIDTH as i32 - 14, 164))
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+        .draw(target)?;
+
+    // ===== LATEST y=170..202 =====
+    Text::with_baseline("LATEST", Point::new(14, 170), *micro, Baseline::Top).draw(target)?;
+    if state.activity_valid && !state.last_event_line.is_empty() {
+        let line_trunc = truncate_chars(&state.last_event_line, 40);
+        Text::with_baseline(&line_trunc, Point::new(14, 184), *tiny, Baseline::Top).draw(target)?;
+    } else if !state.activity_error.is_empty() {
+        let err = truncate_chars(&state.activity_error, 60);
+        Text::with_baseline(&err, Point::new(14, 186), *micro, Baseline::Top).draw(target)?;
+    } else {
+        Text::with_baseline("(fetching...)", Point::new(14, 184), *tiny, Baseline::Top)
+            .draw(target)?;
     }
 
-    // ===== 底部卡片:固件 + 链接 =====
-    let card_y = legend_y + 26;
-    Rectangle::new(
-        Point::new(20, card_y),
-        Size::new((WIDTH as u32) - 40, 60),
-    )
-    .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-    .draw(target)?;
-    Rectangle::new(
-        Point::new(20, card_y),
-        Size::new((WIDTH as u32) - 40, 16),
-    )
-    .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-    .draw(target)?;
-    let label_style = MonoTextStyle::new(&FONT_9X18_BOLD, BinaryColor::Off);
-    Text::with_baseline(
-        "  FIRMWARE",
-        Point::new(24, card_y + 1),
-        label_style,
-        Baseline::Top,
-    )
-    .draw(target)?;
+    // ===== 分隔 y=208 =====
+    Line::new(Point::new(14, 208), Point::new(WIDTH as i32 - 14, 208))
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+        .draw(target)?;
 
-    let mut l1: heapless::String<48> = heapless::String::new();
-    let _ = core::fmt::write(
-        &mut l1,
-        format_args!("{} · v{} · IDF {}", PROJECT_NAME, state.fw_version, state.idf_version),
-    );
-    Text::with_baseline(&l1, Point::new(28, card_y + 22), *tiny, Baseline::Top)
-        .draw(target)?;
-    let mut l2: heapless::String<48> = heapless::String::new();
-    let _ = core::fmt::write(
-        &mut l2,
-        format_args!("github.com/{}/esp32-s3-rlcd", GITHUB_USER),
-    );
-    Text::with_baseline(&l2, Point::new(28, card_y + 42), *micro, Baseline::Top)
-        .draw(target)?;
+    // ===== UNREAD y=212..282 =====
+    // 三点指示 x≈370..390,y≈263..269;文字 x<=346 保证不重叠
+    let mut hdr: heapless::String<24> = heapless::String::new();
+    if state.notif_valid {
+        let _ = core::fmt::write(&mut hdr, format_args!("UNREAD ({})", state.notif_count));
+    } else {
+        let _ = hdr.push_str("UNREAD");
+    }
+    Text::with_baseline(&hdr, Point::new(14, 214), *micro, Baseline::Top).draw(target)?;
+
+    if state.notif_valid && state.notif_count == 0 {
+        Text::with_baseline("all caught up", Point::new(14, 234), *tiny, Baseline::Top)
+            .draw(target)?;
+    } else if state.notif_valid && !state.notif_top_title.is_empty() {
+        let repo = truncate_chars(&state.notif_top_repo, 37);
+        Text::with_baseline(&repo, Point::new(14, 232), *tiny, Baseline::Top).draw(target)?;
+        let title = truncate_chars(&state.notif_top_title, 36);
+        Text::with_baseline(&title, Point::new(14, 258), *tiny, Baseline::Top).draw(target)?;
+    } else {
+        Text::with_baseline("(fetching...)", Point::new(14, 234), *tiny, Baseline::Top)
+            .draw(target)?;
+    }
 
     Ok(())
 }
 
-/// 单元格渲染:level 0..=4 映射成不同大小的实心方块
-/// 0 = 空(只画 1×1 中心点)  1 = 2×2 中心  2 = 3×3 中心  3 = 4×4 中心  4 = 全填
-fn draw_contrib_cell(
+fn truncate_chars(src: &str, max_chars: usize) -> heapless::String<80> {
+    let mut out: heapless::String<80> = heapless::String::new();
+    let n = src.chars().count();
+    if n <= max_chars {
+        for c in src.chars() {
+            if out.push(c).is_err() {
+                break;
+            }
+        }
+    } else {
+        for (i, c) in src.chars().enumerate() {
+            if i >= max_chars.saturating_sub(1) {
+                break;
+            }
+            if out.push(c).is_err() {
+                break;
+            }
+        }
+        let _ = out.push_str("..");
+    }
+    out
+}
+
+/// 日方块:长方形 (w×h),level 0..=4 映射填充密度。
+/// 0 = 仅边框  1 = 1px inset 实心  2 = 2px inset 更窄  3 = 完全填充(略大)  4 = 完全填充
+fn draw_day_cell(
     target: &mut Display<'_>,
     origin: Point,
-    size: u32,
+    w: u32,
+    h: u32,
     level: u8,
 ) -> Result<(), core::convert::Infallible> {
-    let s = size as i32;
-    let (inset, fill) = match level {
-        0 => (s / 2, 1),      // 仅中心 1 点
-        1 => (2, s - 4),      // 2px inset,留 s-4
-        2 => (1, s - 2),      // 1px inset
-        _ => (0, s),          // 满
-    };
-    if level == 0 {
-        // 空格:画边框 1px 勾勒,区分于"无数据"
-        Rectangle::new(origin, Size::new(size, size))
-            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-            .draw(target)?;
-    } else if level >= 3 {
-        Rectangle::new(origin, Size::new(size, size))
+    let iw = w as i32;
+    let ih = h as i32;
+    // 外围 1px 内缩,留 gap 给相邻格视觉分隔
+    let ox = origin.x + 1;
+    let oy = origin.y + 1;
+    let cw = (iw - 2).max(1) as u32;
+    let ch = (ih - 2).max(1) as u32;
+    match level {
+        0 => {
+            // 空日:空心边框
+            Rectangle::new(Point::new(ox, oy), Size::new(cw, ch))
+                .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+                .draw(target)?;
+        }
+        1 => {
+            // 内部小方块(居中,~30% 面积)
+            let inset_x = (cw as i32 / 3).max(1);
+            let inset_y = (ch as i32 / 3).max(1);
+            Rectangle::new(Point::new(ox, oy), Size::new(cw, ch))
+                .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+                .draw(target)?;
+            Rectangle::new(
+                Point::new(ox + inset_x, oy + inset_y),
+                Size::new((cw as i32 - 2 * inset_x).max(1) as u32, (ch as i32 - 2 * inset_y).max(1) as u32),
+            )
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
             .draw(target)?;
-    } else {
-        // 中心实心块
-        Rectangle::new(
-            Point::new(origin.x + inset, origin.y + inset),
-            Size::new(fill as u32, fill as u32),
-        )
-        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-        .draw(target)?;
+        }
+        2 => {
+            // 上下各留 2px 横条
+            Rectangle::new(Point::new(ox, oy), Size::new(cw, ch))
+                .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+                .draw(target)?;
+            let pad = 2i32;
+            Rectangle::new(
+                Point::new(ox + pad, oy + pad),
+                Size::new((cw as i32 - 2 * pad).max(1) as u32, (ch as i32 - 2 * pad).max(1) as u32),
+            )
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(target)?;
+        }
+        3 => {
+            // 几乎全填,留 1px 边框
+            Rectangle::new(Point::new(ox, oy), Size::new(cw, ch))
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                .draw(target)?;
+            Rectangle::new(
+                Point::new(ox + 1, oy + 1),
+                Size::new((cw as i32 - 2).max(1) as u32, (ch as i32 - 2).max(1) as u32),
+            )
+            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::Off, 1))
+            .draw(target)?;
+        }
+        _ => {
+            // 4 = 实心
+            Rectangle::new(Point::new(ox, oy), Size::new(cw, ch))
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                .draw(target)?;
+        }
     }
     Ok(())
 }

@@ -1,15 +1,17 @@
-//! KEY 按键输入(软件去抖 + 下降沿触发)
+//! 按键输入(极简边沿触发,不去抖)
 //!
-//! 电气:板上 KEY 按钮接 GPIO18,按下拉低(按钮另一端接 GND),内部上拉。
+//! 首次调用时记录"空闲电平"(认为没按),之后**任意方向**的电平变化都视为"按下沿",
+//! 触发一次。释放(回到 idle)才能再次触发。
 //!
-//! 逻辑:连续 3 次(~30ms)都读到 low 才算按下;释放后才能再次触发。
+//! 100ms tick 下不额外去抖 ——机械抖动 < 50ms,对 100ms 采样没啥影响,
+//! 反而之前 3×100ms 的去抖让快按触发不了。
 
 use anyhow::Result;
 use esp_idf_svc::hal::gpio::{AnyIOPin, Input, PinDriver, Pull};
 
 pub struct Button {
     pin: PinDriver<'static, Input>,
-    stable_low_count: u8,
+    idle_level: Option<bool>,
     was_pressed: bool,
 }
 
@@ -18,29 +20,32 @@ impl Button {
         let driver = PinDriver::input(pin, Pull::Up)?;
         Ok(Self {
             pin: driver,
-            stable_low_count: 0,
+            idle_level: None,
             was_pressed: false,
         })
     }
 
-    /// 轮询一次(调用方 ~100ms 调一次)。
+    pub fn is_high_now(&self) -> bool {
+        self.pin.is_high()
+    }
+
     /// 返回 true 只在"按下沿"的那一 tick。
     pub fn poll_pressed(&mut self) -> bool {
-        let low = self.pin.is_low();
-        if low {
-            if self.stable_low_count < 3 {
-                self.stable_low_count += 1;
-            }
-        } else {
-            self.stable_low_count = 0;
-            self.was_pressed = false;
-        }
+        let high = self.pin.is_high();
 
-        let currently_pressed = self.stable_low_count >= 3;
-        let edge = currently_pressed && !self.was_pressed;
-        if currently_pressed {
-            self.was_pressed = true;
-        }
+        let idle = match self.idle_level {
+            Some(l) => l,
+            None => {
+                self.idle_level = Some(high);
+                log::info!("Button idle level latched: {}", if high { "HIGH" } else { "LOW" });
+                return false;
+            }
+        };
+
+        let active = high != idle;
+
+        let edge = active && !self.was_pressed;
+        self.was_pressed = active;
         edge
     }
 }

@@ -76,6 +76,11 @@ impl<'d> Display<'d> {
         self.driver.write_frame(self.fb.raw())?;
         Ok(())
     }
+
+    /// 暴露 fb 原始字节供镜屏/调试使用(不改动)
+    pub fn fb_raw(&self) -> &[u8] {
+        self.fb.raw()
+    }
 }
 
 impl<'d> OriginDimensions for Display<'d> {

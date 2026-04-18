@@ -4,8 +4,11 @@
 //! Phase 2:凭据从 NVS 读
 //! Phase 3:BLE 配网写 NVS
 
+pub mod activity;
 pub mod creds;
 pub mod github;
+pub mod notifications;
+pub mod screen_http;
 pub mod prov;
 pub mod sntp;
 pub mod time;
