@@ -68,78 +68,34 @@ pub fn fetch(token: &str) -> Result<NotifSummary> {
     parse(&body).context("parse notifications JSON")
 }
 
+#[derive(serde::Deserialize)]
+struct RawNotif {
+    subject: Subject,
+    repository: Repository,
+}
+#[derive(serde::Deserialize)]
+struct Subject {
+    title: String,
+}
+#[derive(serde::Deserialize)]
+struct Repository {
+    full_name: String,
+}
+
 fn parse(body: &[u8]) -> Result<NotifSummary> {
-    let s = std::str::from_utf8(body).context("body not utf-8")?;
-    let titles = scan_json_strings(s, "\"title\":\"");
-    let repos = scan_json_strings(s, "\"full_name\":\"");
-    let n = titles.len().min(repos.len());
-    let items: Vec<NotifItem> = titles
+    let raw: Vec<RawNotif> = serde_json::from_slice(body).context("notifications JSON")?;
+    let items: Vec<NotifItem> = raw
         .into_iter()
-        .zip(repos)
-        .take(n)
-        .map(|(t, r)| NotifItem { title: t, repo: r })
+        .map(|n| NotifItem {
+            title: n.subject.title,
+            repo: n.repository.full_name,
+        })
         .collect();
     log::info!("GH Notif: parsed {} unread", items.len());
     Ok(NotifSummary {
         count: items.len(),
         items,
     })
-}
-
-fn scan_json_strings(s: &str, key: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cursor = 0usize;
-    while let Some(rel) = s[cursor..].find(key) {
-        let start = cursor + rel + key.len();
-        let tail = &s[start..];
-        let mut end = 0usize;
-        let mut escape = false;
-        for (i, c) in tail.char_indices() {
-            if escape {
-                escape = false;
-                continue;
-            }
-            if c == '\\' {
-                escape = true;
-                continue;
-            }
-            if c == '"' {
-                end = i;
-                break;
-            }
-        }
-        if end == 0 {
-            break;
-        }
-        out.push(unescape(&tail[..end]));
-        cursor = start + end + 1;
-    }
-    out
-}
-
-fn unescape(s: &str) -> String {
-    // 简陋:把 \" \\ \n \t 处理掉,其它转义原样留
-    let mut out = String::with_capacity(s.len());
-    let mut iter = s.chars();
-    while let Some(c) = iter.next() {
-        if c == '\\' {
-            match iter.next() {
-                Some('"') => out.push('"'),
-                Some('\\') => out.push('\\'),
-                Some('n') => out.push(' '),
-                Some('t') => out.push(' '),
-                Some('/') => out.push('/'),
-                Some(other) => {
-                    out.push('\\');
-                    out.push(other);
-                }
-                None => {}
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 /// 后台线程:周期从 config.notif_s 读,每轮 re-read

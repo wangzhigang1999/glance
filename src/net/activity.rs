@@ -38,8 +38,12 @@ pub fn fetch(user: &str, token: &str) -> Result<Activity> {
         user
     );
     if let Ok(body) = http_get(&search, Some(token)) {
-        if let Some(tc) = find_total_count(&body) {
-            act.open_prs = tc as u32;
+        #[derive(serde::Deserialize)]
+        struct Search {
+            total_count: u32,
+        }
+        if let Ok(s) = serde_json::from_str::<Search>(&body) {
+            act.open_prs = s.total_count;
         }
     } else {
         log::warn!("activity: PR search failed (ignored)");
@@ -88,159 +92,131 @@ fn http_get(url: &str, token: Option<&str>) -> Result<String> {
     Ok(String::from_utf8(body).context("body not utf-8")?)
 }
 
-/// 返回 (摘要行, 详情)。摘要形如 "reviewed repo#123"、"pushed to repo"。
-fn parse_last_event(body: &str) -> Option<(String, String)> {
-    // 最新一条 event 的 type:第一次出现的 "type":
-    let ev_type = find_str(body, "\"type\":\"")?;
-    let repo = find_str_after(body, "\"repo\":{", "\"name\":\"").unwrap_or_default();
-
-    let line;
-    let detail;
-    match ev_type.as_str() {
-        "PushEvent" => {
-            // payload.commits[-1].message
-            detail = find_last_str_after(body, "\"commits\":", "\"message\":\"")
-                .map(first_line)
-                .unwrap_or_default();
-            line = format!("pushed to {}", repo);
-        }
-        "PullRequestEvent" => {
-            let action = find_str(body, "\"action\":\"").unwrap_or_else(|| "updated".into());
-            let num = find_int_after(body, "\"pull_request\":{", "\"number\":").unwrap_or(0);
-            detail = find_str_after(body, "\"pull_request\":{", "\"title\":\"").unwrap_or_default();
-            line = format!("{} PR {}#{}", action, repo, num);
-        }
-        "PullRequestReviewEvent" => {
-            let num = find_int_after(body, "\"pull_request\":{", "\"number\":").unwrap_or(0);
-            let review_body =
-                find_str_after(body, "\"review\":{", "\"body\":\"").unwrap_or_default();
-            detail = first_line(review_body);
-            line = format!("reviewed {}#{}", repo, num);
-        }
-        "PullRequestReviewCommentEvent" => {
-            let num = find_int_after(body, "\"pull_request\":{", "\"number\":").unwrap_or(0);
-            let c = find_str_after(body, "\"comment\":{", "\"body\":\"").unwrap_or_default();
-            detail = first_line(c);
-            line = format!("review comment on {}#{}", repo, num);
-        }
-        "IssueCommentEvent" => {
-            let num = find_int_after(body, "\"issue\":{", "\"number\":").unwrap_or(0);
-            let c = find_str_after(body, "\"comment\":{", "\"body\":\"").unwrap_or_default();
-            detail = first_line(c);
-            line = format!("commented on {}#{}", repo, num);
-        }
-        "IssuesEvent" => {
-            let action = find_str(body, "\"action\":\"").unwrap_or_else(|| "updated".into());
-            let num = find_int_after(body, "\"issue\":{", "\"number\":").unwrap_or(0);
-            detail = find_str_after(body, "\"issue\":{", "\"title\":\"").unwrap_or_default();
-            line = format!("{} issue {}#{}", action, repo, num);
-        }
-        "CreateEvent" => {
-            let ref_type = find_str(body, "\"ref_type\":\"").unwrap_or_default();
-            detail = String::new();
-            line = format!("created {} in {}", ref_type, repo);
-        }
-        "ForkEvent" => {
-            detail = String::new();
-            line = format!("forked {}", repo);
-        }
-        "WatchEvent" => {
-            detail = String::new();
-            line = format!("starred {}", repo);
-        }
-        "ReleaseEvent" => {
-            let name = find_str_after(body, "\"release\":{", "\"name\":\"").unwrap_or_default();
-            detail = String::new();
-            line = format!("released {} in {}", name, repo);
-        }
-        _ => {
-            detail = String::new();
-            line = format!("{} on {}", ev_type.trim_end_matches("Event"), repo);
-        }
-    }
-    Some((line, detail))
+// ---- Event deserialize;payload 因 type 而异,所有字段都 Option ----
+#[derive(serde::Deserialize)]
+struct Event {
+    #[serde(rename = "type")]
+    ty: String,
+    #[serde(default)]
+    repo: Option<Repo>,
+    #[serde(default)]
+    payload: Option<Payload>,
+}
+#[derive(serde::Deserialize)]
+struct Repo {
+    name: String,
+}
+#[derive(serde::Deserialize, Default)]
+struct Payload {
+    #[serde(default)]
+    action: Option<String>,
+    #[serde(default)]
+    commits: Option<Vec<Commit>>,
+    #[serde(default)]
+    pull_request: Option<Issue>,
+    #[serde(default)]
+    issue: Option<Issue>,
+    #[serde(default)]
+    comment: Option<Body>,
+    #[serde(default)]
+    review: Option<Body>,
+    #[serde(default)]
+    release: Option<Named>,
+    #[serde(default)]
+    ref_type: Option<String>,
+}
+#[derive(serde::Deserialize)]
+struct Commit {
+    message: String,
+}
+#[derive(serde::Deserialize)]
+struct Issue {
+    number: u64,
+    #[serde(default)]
+    title: Option<String>,
+}
+#[derive(serde::Deserialize)]
+struct Body {
+    #[serde(default)]
+    body: Option<String>,
+}
+#[derive(serde::Deserialize)]
+struct Named {
+    #[serde(default)]
+    name: Option<String>,
 }
 
-fn first_line(s: String) -> String {
+fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").to_string()
 }
 
-/// 找 `key` 后的 JSON 字符串(处理 \" \\ \n 转义)。key 需包含起始引号,如 `"\"name\":\""`。
-fn find_str(body: &str, key: &str) -> Option<String> {
-    let pos = body.find(key)?;
-    read_json_string(&body[pos + key.len()..])
-}
+/// 返回 (摘要行, 详情)。摘要形如 "reviewed repo#123"、"pushed to repo"。
+fn parse_last_event(body: &str) -> Option<(String, String)> {
+    // events 接口返回数组,取第一条
+    let events: Vec<Event> = serde_json::from_str(body).ok()?;
+    let ev = events.into_iter().next()?;
+    let repo = ev.repo.map(|r| r.name).unwrap_or_default();
+    let pl = ev.payload.unwrap_or_default();
 
-/// 先定位 anchor,再在其之后找 key 的字符串值。
-fn find_str_after(body: &str, anchor: &str, key: &str) -> Option<String> {
-    let a = body.find(anchor)?;
-    let sub = &body[a..];
-    find_str(sub, key)
-}
-
-/// 找 anchor 之后的 key,但返回**最后一次**命中(对 commits[-1] 用)。
-fn find_last_str_after(body: &str, anchor: &str, key: &str) -> Option<String> {
-    let a = body.find(anchor)?;
-    let sub = &body[a..];
-    let mut cursor = 0usize;
-    let mut last: Option<String> = None;
-    while let Some(rel) = sub[cursor..].find(key) {
-        let start = cursor + rel + key.len();
-        if let Some(s) = read_json_string(&sub[start..]) {
-            last = Some(s);
+    let (line, detail) = match ev.ty.as_str() {
+        "PushEvent" => {
+            // 最后一条 commit 的 message 首行
+            let detail = pl
+                .commits
+                .and_then(|cs| cs.into_iter().last())
+                .map(|c| first_line(&c.message))
+                .unwrap_or_default();
+            (format!("pushed to {}", repo), detail)
         }
-        cursor = start;
-    }
-    last
-}
-
-fn find_int_after(body: &str, anchor: &str, key: &str) -> Option<i64> {
-    let a = body.find(anchor)?;
-    let sub = &body[a..];
-    let p = sub.find(key)?;
-    let tail = sub[p + key.len()..].trim_start();
-    let end = tail.find(|c: char| !c.is_ascii_digit() && c != '-')?;
-    tail[..end].parse().ok()
-}
-
-fn read_json_string(after_opening_quote: &str) -> Option<String> {
-    let mut out = String::with_capacity(64);
-    let mut chars = after_opening_quote.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.next()? {
-                '"' => out.push('"'),
-                '\\' => out.push('\\'),
-                '/' => out.push('/'),
-                'n' => out.push('\n'),
-                'r' => out.push('\r'),
-                't' => out.push(' '),
-                'u' => {
-                    // 跳过 \uXXXX,不展开
-                    for _ in 0..4 {
-                        chars.next();
-                    }
-                    out.push('?');
-                }
-                other => {
-                    out.push('\\');
-                    out.push(other);
-                }
-            }
-        } else if c == '"' {
-            return Some(out);
-        } else {
-            out.push(c);
+        "PullRequestEvent" => {
+            let action = pl.action.unwrap_or_else(|| "updated".into());
+            let pr = pl.pull_request.unwrap_or(Issue {
+                number: 0,
+                title: None,
+            });
+            let detail = pr.title.unwrap_or_default();
+            (format!("{} PR {}#{}", action, repo, pr.number), detail)
         }
-    }
-    None
-}
-
-fn find_total_count(body: &str) -> Option<i64> {
-    let p = body.find("\"total_count\":")?;
-    let tail = body[p + "\"total_count\":".len()..].trim_start();
-    let end = tail.find(|c: char| !c.is_ascii_digit() && c != '-')?;
-    tail[..end].parse().ok()
+        "PullRequestReviewEvent" => {
+            let num = pl.pull_request.map(|p| p.number).unwrap_or(0);
+            let detail = pl.review.and_then(|r| r.body).map(|s| first_line(&s)).unwrap_or_default();
+            (format!("reviewed {}#{}", repo, num), detail)
+        }
+        "PullRequestReviewCommentEvent" => {
+            let num = pl.pull_request.map(|p| p.number).unwrap_or(0);
+            let detail = pl.comment.and_then(|c| c.body).map(|s| first_line(&s)).unwrap_or_default();
+            (format!("review comment on {}#{}", repo, num), detail)
+        }
+        "IssueCommentEvent" => {
+            let num = pl.issue.as_ref().map(|i| i.number).unwrap_or(0);
+            let detail = pl.comment.and_then(|c| c.body).map(|s| first_line(&s)).unwrap_or_default();
+            (format!("commented on {}#{}", repo, num), detail)
+        }
+        "IssuesEvent" => {
+            let action = pl.action.unwrap_or_else(|| "updated".into());
+            let issue = pl.issue.unwrap_or(Issue {
+                number: 0,
+                title: None,
+            });
+            let detail = issue.title.unwrap_or_default();
+            (format!("{} issue {}#{}", action, repo, issue.number), detail)
+        }
+        "CreateEvent" => {
+            let rt = pl.ref_type.unwrap_or_default();
+            (format!("created {} in {}", rt, repo), String::new())
+        }
+        "ForkEvent" => (format!("forked {}", repo), String::new()),
+        "WatchEvent" => (format!("starred {}", repo), String::new()),
+        "ReleaseEvent" => {
+            let name = pl.release.and_then(|r| r.name).unwrap_or_default();
+            (format!("released {} in {}", name, repo), String::new())
+        }
+        other => (
+            format!("{} on {}", other.trim_end_matches("Event"), repo),
+            String::new(),
+        ),
+    };
+    Some((line, detail))
 }
 
 pub fn spawn_fetcher(

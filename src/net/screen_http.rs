@@ -11,8 +11,10 @@
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use esp_idf_svc::http::client::{Configuration as HttpClientConfig, EspHttpConnection};
 use esp_idf_svc::http::server::{Configuration, EspHttpServer};
 use esp_idf_svc::http::Method;
 use esp_idf_svc::io::Write;
@@ -356,6 +358,81 @@ pub fn start(
         },
     )?;
 
+    // ---- POST /api/whoami ----
+    // body: {"token":"..."}  token 缺省或以 "***" 开头则用当前 config 里的
+    let cfg_for_whoami = cfg.clone();
+    server.fn_handler(
+        "/api/whoami",
+        Method::Post,
+        move |mut req| -> Result<(), anyhow::Error> {
+            let mut buf = [0u8; 512];
+            let mut total = 0usize;
+            loop {
+                match req.read(&mut buf[total..]) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        total += n;
+                        if total >= buf.len() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let body = std::str::from_utf8(&buf[..total]).unwrap_or("");
+            #[derive(serde::Deserialize, Default)]
+            struct WhoamiReq {
+                #[serde(default)]
+                token: String,
+            }
+            let mut token = serde_json::from_str::<WhoamiReq>(body)
+                .unwrap_or_default()
+                .token;
+            if token.is_empty() || token.starts_with("***") {
+                token = cfg_for_whoami.read().unwrap().gh_token.clone();
+            }
+            if token.is_empty() {
+                let mut resp = req.into_status_response(400)?;
+                resp.write_all(b"{\"ok\":false,\"error\":\"no token\"}")?;
+                return Ok(());
+            }
+            #[derive(serde::Serialize)]
+            struct Ok_ {
+                ok: bool,
+                login: String,
+            }
+            #[derive(serde::Serialize)]
+            struct Err_ {
+                ok: bool,
+                error: String,
+            }
+            match github_whoami(&token) {
+                Ok(login) => {
+                    let s = serde_json::to_string(&Ok_ { ok: true, login }).unwrap();
+                    let len = s.len().to_string();
+                    let headers = [
+                        ("content-type", "application/json; charset=utf-8"),
+                        ("cache-control", "no-store"),
+                        ("content-length", len.as_str()),
+                    ];
+                    let mut resp = req.into_response(200, Some("OK"), &headers)?;
+                    resp.write_all(s.as_bytes())?;
+                    Ok(())
+                }
+                Err(e) => {
+                    let s = serde_json::to_string(&Err_ {
+                        ok: false,
+                        error: format!("{e:#}"),
+                    })
+                    .unwrap();
+                    let mut resp = req.into_status_response(502)?;
+                    resp.write_all(s.as_bytes())?;
+                    Ok(())
+                }
+            }
+        },
+    )?;
+
     // ---- POST /api/reboot ----
     server.fn_handler(
         "/api/reboot",
@@ -381,223 +458,168 @@ pub fn start(
     Ok(server)
 }
 
+/// 用 token 调用 `GET https://api.github.com/user`,取 `login`
+fn github_whoami(token: &str) -> Result<String> {
+    let cfg = HttpClientConfig {
+        crt_bundle_attach: Some(esp_idf_svc::sys::esp_crt_bundle_attach),
+        timeout: Some(Duration::from_secs(15)),
+        buffer_size: Some(4096),
+        buffer_size_tx: Some(1024),
+        ..Default::default()
+    };
+    let mut conn = EspHttpConnection::new(&cfg)?;
+
+    let auth = format!("Bearer {}", token);
+    let headers = [
+        ("user-agent", "rlcd-thermo/0.1"),
+        ("accept", "application/vnd.github+json"),
+        ("x-github-api-version", "2022-11-28"),
+        ("authorization", auth.as_str()),
+    ];
+    conn.initiate_request(Method::Get, "https://api.github.com/user", &headers)?;
+    conn.initiate_response()?;
+    let status = conn.status();
+    if status != 200 {
+        return Err(anyhow!("HTTP {}", status));
+    }
+
+    let mut body: Vec<u8> = Vec::with_capacity(4096);
+    let mut chunk = [0u8; 1024];
+    loop {
+        match conn.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => body.extend_from_slice(&chunk[..n]),
+            Err(e) => return Err(anyhow!("read: {e:?}")),
+        }
+    }
+    #[derive(serde::Deserialize)]
+    struct User {
+        login: String,
+    }
+    let u: User = serde_json::from_slice(&body).map_err(|e| anyhow!("parse /user: {e}"))?;
+    Ok(u.login)
+}
+
+/// 出站视图:token 脱敏为 `***<后4位>`,额外暴露 `gh_token_set` 给 UI 判断
+#[derive(serde::Serialize)]
+struct ConfigView<'a> {
+    gh_user: &'a str,
+    gh_token: String,
+    gh_token_set: bool,
+    contrib_ok_s: u32,
+    contrib_err_s: u32,
+    activity_ok_s: u32,
+    activity_err_s: u32,
+    activity_stagger_s: u32,
+    notif_s: u32,
+    sensor_refresh_s: u32,
+    auto_rotate: bool,
+    auto_rotate_s: u32,
+    temp_off_c: f32,
+    humid_off_pct: f32,
+    tz_off_s: i32,
+    splash_flash: u32,
+}
+
 fn emit_config_json(c: &crate::config::RuntimeConfig, mask_token: bool) -> String {
-    let mut s = String::with_capacity(512);
-    s.push('{');
-    // 字符串字段
-    push_kv_str(&mut s, "gh_user", &c.gh_user);
-    s.push(',');
     let token_display = if mask_token && !c.gh_token.is_empty() {
-        // 只暴露 "***<后4位>" 给 UI,防窥全值
-        let tail = c.gh_token.chars().rev().take(4).collect::<String>();
+        let tail: String = c.gh_token.chars().rev().take(4).collect();
         let tail: String = tail.chars().rev().collect();
         format!("***{tail}")
     } else {
         c.gh_token.clone()
     };
-    push_kv_str(&mut s, "gh_token", &token_display);
-    s.push(',');
-    push_kv_bool(&mut s, "gh_token_set", !c.gh_token.is_empty());
-    s.push(',');
-    // 数字字段
-    push_kv_u32(&mut s, "contrib_ok_s", c.contrib_ok_s);
-    s.push(',');
-    push_kv_u32(&mut s, "contrib_err_s", c.contrib_err_s);
-    s.push(',');
-    push_kv_u32(&mut s, "activity_ok_s", c.activity_ok_s);
-    s.push(',');
-    push_kv_u32(&mut s, "activity_err_s", c.activity_err_s);
-    s.push(',');
-    push_kv_u32(&mut s, "activity_stagger_s", c.activity_stagger_s);
-    s.push(',');
-    push_kv_u32(&mut s, "notif_s", c.notif_s);
-    s.push(',');
-    push_kv_u32(&mut s, "sensor_refresh_s", c.sensor_refresh_s);
-    s.push(',');
-    push_kv_bool(&mut s, "auto_rotate", c.auto_rotate);
-    s.push(',');
-    push_kv_u32(&mut s, "auto_rotate_s", c.auto_rotate_s);
-    s.push(',');
-    push_kv_f32(&mut s, "temp_off_c", c.temp_off_c);
-    s.push(',');
-    push_kv_f32(&mut s, "humid_off_pct", c.humid_off_pct);
-    s.push(',');
-    push_kv_i32(&mut s, "tz_off_s", c.tz_off_s);
-    s.push(',');
-    push_kv_u32(&mut s, "splash_flash", c.splash_flash);
-    s.push('}');
-    s
+    let view = ConfigView {
+        gh_user: &c.gh_user,
+        gh_token: token_display,
+        gh_token_set: !c.gh_token.is_empty(),
+        contrib_ok_s: c.contrib_ok_s,
+        contrib_err_s: c.contrib_err_s,
+        activity_ok_s: c.activity_ok_s,
+        activity_err_s: c.activity_err_s,
+        activity_stagger_s: c.activity_stagger_s,
+        notif_s: c.notif_s,
+        sensor_refresh_s: c.sensor_refresh_s,
+        auto_rotate: c.auto_rotate,
+        auto_rotate_s: c.auto_rotate_s,
+        temp_off_c: c.temp_off_c,
+        humid_off_pct: c.humid_off_pct,
+        tz_off_s: c.tz_off_s,
+        splash_flash: c.splash_flash,
+    };
+    serde_json::to_string(&view).unwrap_or_else(|_| "{}".to_string())
 }
 
-fn push_kv_str(out: &mut String, k: &str, v: &str) {
-    out.push('"');
-    out.push_str(k);
-    out.push_str("\":\"");
-    for c in v.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push('?'),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-}
-fn push_kv_u32(out: &mut String, k: &str, v: u32) {
-    out.push('"');
-    out.push_str(k);
-    out.push_str("\":");
-    out.push_str(&v.to_string());
-}
-fn push_kv_i32(out: &mut String, k: &str, v: i32) {
-    out.push('"');
-    out.push_str(k);
-    out.push_str("\":");
-    out.push_str(&v.to_string());
-}
-fn push_kv_f32(out: &mut String, k: &str, v: f32) {
-    out.push('"');
-    out.push_str(k);
-    out.push_str("\":");
-    out.push_str(&format!("{:.2}", v));
-}
-fn push_kv_bool(out: &mut String, k: &str, v: bool) {
-    out.push('"');
-    out.push_str(k);
-    out.push_str("\":");
-    out.push_str(if v { "true" } else { "false" });
+/// 入站 patch:所有字段 Option,缺省表示不更新。脱敏 token(`***...`)视为不更新。
+#[derive(serde::Deserialize, Default)]
+struct ConfigPatch {
+    gh_user: Option<String>,
+    gh_token: Option<String>,
+    contrib_ok_s: Option<u32>,
+    contrib_err_s: Option<u32>,
+    activity_ok_s: Option<u32>,
+    activity_err_s: Option<u32>,
+    activity_stagger_s: Option<u32>,
+    notif_s: Option<u32>,
+    sensor_refresh_s: Option<u32>,
+    auto_rotate: Option<bool>,
+    auto_rotate_s: Option<u32>,
+    temp_off_c: Option<f32>,
+    humid_off_pct: Option<f32>,
+    tz_off_s: Option<i32>,
+    splash_flash: Option<u32>,
 }
 
-/// 从 JSON body 抽出字段更新。未出现的字段保留原值。脱敏 token 串("***xxxx" 开头)会被忽略。
 fn apply_json_patch(c: &mut crate::config::RuntimeConfig, body: &str) {
-    if let Some(v) = find_str(body, "gh_user") {
+    let p: ConfigPatch = serde_json::from_str(body).unwrap_or_default();
+    if let Some(v) = p.gh_user {
         c.gh_user = v;
     }
-    if let Some(v) = find_str(body, "gh_token") {
-        // 前端提交脱敏占位则不覆盖
-        if !v.starts_with("***") && !v.is_empty() {
-            c.gh_token = v;
-        } else if v.is_empty() {
-            // 显式清空(用户留空 token 字段)
+    if let Some(v) = p.gh_token {
+        if v.is_empty() {
             c.gh_token.clear();
+        } else if !v.starts_with("***") {
+            c.gh_token = v;
         }
     }
-    if let Some(v) = find_u32(body, "contrib_ok_s") {
+    if let Some(v) = p.contrib_ok_s {
         c.contrib_ok_s = v;
     }
-    if let Some(v) = find_u32(body, "contrib_err_s") {
+    if let Some(v) = p.contrib_err_s {
         c.contrib_err_s = v;
     }
-    if let Some(v) = find_u32(body, "activity_ok_s") {
+    if let Some(v) = p.activity_ok_s {
         c.activity_ok_s = v;
     }
-    if let Some(v) = find_u32(body, "activity_err_s") {
+    if let Some(v) = p.activity_err_s {
         c.activity_err_s = v;
     }
-    if let Some(v) = find_u32(body, "activity_stagger_s") {
+    if let Some(v) = p.activity_stagger_s {
         c.activity_stagger_s = v;
     }
-    if let Some(v) = find_u32(body, "notif_s") {
+    if let Some(v) = p.notif_s {
         c.notif_s = v;
     }
-    if let Some(v) = find_u32(body, "sensor_refresh_s") {
+    if let Some(v) = p.sensor_refresh_s {
         c.sensor_refresh_s = v;
     }
-    if let Some(v) = find_bool(body, "auto_rotate") {
+    if let Some(v) = p.auto_rotate {
         c.auto_rotate = v;
     }
-    if let Some(v) = find_u32(body, "auto_rotate_s") {
+    if let Some(v) = p.auto_rotate_s {
         c.auto_rotate_s = v;
     }
-    if let Some(v) = find_f32(body, "temp_off_c") {
+    if let Some(v) = p.temp_off_c {
         c.temp_off_c = v;
     }
-    if let Some(v) = find_f32(body, "humid_off_pct") {
+    if let Some(v) = p.humid_off_pct {
         c.humid_off_pct = v;
     }
-    if let Some(v) = find_i32(body, "tz_off_s") {
+    if let Some(v) = p.tz_off_s {
         c.tz_off_s = v;
     }
-    if let Some(v) = find_u32(body, "splash_flash") {
+    if let Some(v) = p.splash_flash {
         c.splash_flash = v;
-    }
-}
-
-fn find_key_pos(body: &str, key: &str) -> Option<usize> {
-    // 匹配 "key":
-    let needle = format!("\"{}\"", key);
-    let mut cursor = 0;
-    while let Some(rel) = body[cursor..].find(&needle) {
-        let after = cursor + rel + needle.len();
-        let rest = &body[after..];
-        let trimmed = rest.trim_start();
-        if trimmed.starts_with(':') {
-            return Some(after + (rest.len() - trimmed.len()) + 1);
-        }
-        cursor = after;
-    }
-    None
-}
-fn find_str(body: &str, key: &str) -> Option<String> {
-    let p = find_key_pos(body, key)?;
-    let rest = body[p..].trim_start();
-    let rest = rest.strip_prefix('"')?;
-    let mut out = String::new();
-    let mut it = rest.chars();
-    while let Some(ch) = it.next() {
-        if ch == '\\' {
-            match it.next()? {
-                '"' => out.push('"'),
-                '\\' => out.push('\\'),
-                '/' => out.push('/'),
-                'n' => out.push('\n'),
-                'r' => out.push('\r'),
-                't' => out.push('\t'),
-                o => out.push(o),
-            }
-        } else if ch == '"' {
-            return Some(out);
-        } else {
-            out.push(ch);
-        }
-    }
-    None
-}
-fn find_num_raw<'a>(body: &'a str, key: &str) -> Option<&'a str> {
-    let p = find_key_pos(body, key)?;
-    let rest = body[p..].trim_start();
-    let end = rest
-        .find(|c: char| !(c.is_ascii_digit() || c == '-' || c == '.' || c == '+'))
-        .unwrap_or(rest.len());
-    if end == 0 {
-        None
-    } else {
-        // 把相对 rest 的切片映射回 body 的切片
-        let start_in_body = body.len() - rest.len();
-        Some(&body[start_in_body..start_in_body + end])
-    }
-}
-fn find_u32(body: &str, key: &str) -> Option<u32> {
-    find_num_raw(body, key)?.parse().ok()
-}
-fn find_i32(body: &str, key: &str) -> Option<i32> {
-    find_num_raw(body, key)?.parse().ok()
-}
-fn find_f32(body: &str, key: &str) -> Option<f32> {
-    find_num_raw(body, key)?.parse().ok()
-}
-fn find_bool(body: &str, key: &str) -> Option<bool> {
-    let p = find_key_pos(body, key)?;
-    let rest = body[p..].trim_start();
-    if rest.starts_with("true") {
-        Some(true)
-    } else if rest.starts_with("false") {
-        Some(false)
-    } else {
-        None
     }
 }
 
@@ -666,13 +688,16 @@ tailwind.config={darkMode:'media',theme:{extend:{
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
       <div>
         <label class=label for=gh_user>Username</label>
-        <input class=input id=gh_user placeholder="wangzhigang1999">
-        <div class=hint>Your GitHub login. Fetchers read on next cycle.</div>
+        <div class="flex gap-2">
+          <input class="input flex-1" id=gh_user placeholder="your-github-login">
+          <button id=discover class=btn title="Fetch login from token via /user" type=button><i class="fa-solid fa-wand-magic-sparkles"></i><span class="hidden sm:inline">Discover</span></button>
+        </div>
+        <div class=hint>Type it, or paste a token and click Discover to auto-fill.</div>
       </div>
       <div>
         <label class=label for=gh_token>Personal access token</label>
-        <input class=input id=gh_token type=password autocomplete=off placeholder="ghp_...">
-        <div class=hint>Scope: <code>notifications</code> + <code>repo</code>. Shown masked; leave unchanged to keep.</div>
+        <input class=input id=gh_token type=password autocomplete=off placeholder="ghp_... or github_pat_...">
+        <div class=hint>Scopes: <code>repo</code> + <code>notifications</code>. Shown masked after save; leave unchanged to keep.</div>
       </div>
     </div>
   </section>
@@ -776,9 +801,27 @@ async function reboot(){
   try{await fetch('/api/reboot',{method:'POST'});showToast('rebooting...','ok')}
   catch{showToast('reboot failed','err')}
 }
+async function discover(){
+  const btn=$('discover');
+  const oldHtml=btn.innerHTML;
+  btn.disabled=true;btn.innerHTML='<i class="fa-solid fa-spinner fa-spin"></i><span class="hidden sm:inline">...</span>';
+  try{
+    const tok=$('gh_token').value;
+    const payload={};
+    // 非脱敏占位才带上 token(否则后端用已保存的)
+    if(tok&&!tok.startsWith('***'))payload.token=tok;
+    const r=await fetch('/api/whoami',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)});
+    const j=await r.json();
+    if(!r.ok||!j.ok)throw new Error(j.error||('HTTP '+r.status));
+    $('gh_user').value=j.login;
+    showToast('discovered: '+j.login,'ok');
+  }catch(e){showToast('discover failed: '+e.message,'err')}
+  finally{btn.disabled=false;btn.innerHTML=oldHtml}
+}
 $('save').onclick=save;
 $('reload').onclick=load;
 $('reboot').onclick=reboot;
+$('discover').onclick=discover;
 load();
 })();
 </script>

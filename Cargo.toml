@@ -1,7 +1,6 @@
 [package]
 name = "firmware"
 version = "0.1.0"
-authors = ["Zhigang <wangzhigang1999@live.cn>"]
 edition = "2021"
 resolver = "2"
 rust-version = "1.82"
@@ -27,6 +26,8 @@ heapless = "0.8"
 profont = "0.7"
 u8g2-fonts = "0.7"
 esp32-nimble = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [build-dependencies]
 embuild = "0.33"

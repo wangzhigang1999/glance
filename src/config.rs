@@ -10,7 +10,7 @@ use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
 
 pub type SharedConfig = Arc<RwLock<RuntimeConfig>>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RuntimeConfig {
     // --- GitHub 身份 ---
     pub gh_user: String,
@@ -38,7 +38,7 @@ pub struct RuntimeConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
-            gh_user: "wangzhigang1999".into(),
+            gh_user: String::new(),
             gh_token: String::new(),
             contrib_ok_s: 300,
             contrib_err_s: 120,

@@ -72,41 +72,74 @@ pub fn fetch(user: &str, token: &str) -> Result<ContribData> {
     parse_response(&body_buf).context("parse GitHub GraphQL JSON")
 }
 
+// ---- GraphQL 响应 deserialize ----
+#[derive(serde::Deserialize)]
+struct GqlResp {
+    #[serde(default)]
+    data: Option<GqlData>,
+    #[serde(default)]
+    errors: Option<serde_json::Value>,
+}
+#[derive(serde::Deserialize)]
+struct GqlData {
+    user: GqlUser,
+}
+#[derive(serde::Deserialize)]
+struct GqlUser {
+    #[serde(rename = "contributionsCollection")]
+    cc: Cc,
+}
+#[derive(serde::Deserialize)]
+struct Cc {
+    #[serde(rename = "contributionCalendar")]
+    cal: Cal,
+}
+#[derive(serde::Deserialize)]
+struct Cal {
+    #[serde(rename = "totalContributions")]
+    total: u32,
+    weeks: Vec<Week>,
+}
+#[derive(serde::Deserialize)]
+struct Week {
+    #[serde(rename = "contributionDays")]
+    days: Vec<Day>,
+}
+#[derive(serde::Deserialize)]
+struct Day {
+    #[serde(rename = "contributionCount")]
+    count: u32,
+    #[serde(rename = "contributionLevel")]
+    level: String,
+}
+
 fn parse_response(body: &[u8]) -> Result<ContribData> {
-    let s = std::str::from_utf8(body).context("body not utf-8")?;
-
-    // 检测 GraphQL 错误
-    if s.contains("\"errors\"") {
-        return Err(anyhow!(
-            "GitHub GraphQL error: {}",
-            &s[..s.len().min(200)]
-        ));
+    let resp: GqlResp = serde_json::from_slice(body).context("graphql JSON")?;
+    if let Some(errs) = resp.errors {
+        let s = serde_json::to_string(&errs).unwrap_or_default();
+        return Err(anyhow!("GitHub GraphQL error: {}", &s[..s.len().min(200)]));
     }
+    let cal = resp.data.context("graphql: no data")?.user.cc.cal;
 
-    let total_year = find_json_int(s, "\"totalContributions\"")
-        .unwrap_or(0)
-        .max(0) as u32;
-
-    let counts: Vec<u32> = scan_ints(s, "\"contributionCount\":")
-        .into_iter()
-        .map(|n| n.max(0) as u32)
-        .collect();
-
-    let levels: Vec<u8> = scan_strings(s, "\"contributionLevel\":\"")
-        .into_iter()
-        .map(|l| level_from_str(&l))
-        .collect();
+    let mut counts: Vec<u32> = Vec::with_capacity(400);
+    let mut levels: Vec<u8> = Vec::with_capacity(400);
+    for w in cal.weeks {
+        for d in w.days {
+            counts.push(d.count);
+            levels.push(level_from_str(&d.level));
+        }
+    }
 
     log::info!(
         "GitHub: parsed total={} levels={} counts={}",
-        total_year,
+        cal.total,
         levels.len(),
         counts.len()
     );
     Ok(ContribData {
         levels,
         counts,
-        total_year,
+        total_year: cal.total,
     })
 }
 
@@ -118,64 +151,6 @@ fn level_from_str(s: &str) -> u8 {
         "THIRD_QUARTILE" => 3,
         "FOURTH_QUARTILE" => 4,
         _ => 0,
-    }
-}
-
-fn scan_ints(s: &str, key: &str) -> Vec<i64> {
-    let mut out = Vec::new();
-    let mut cursor = 0usize;
-    while let Some(rel) = s[cursor..].find(key) {
-        let start = cursor + rel + key.len();
-        let tail = &s[start..];
-        let trimmed = tail.trim_start();
-        let skipped = tail.len() - trimmed.len();
-        let end = trimmed
-            .find(|c: char| !c.is_ascii_digit() && c != '-')
-            .unwrap_or(trimmed.len());
-        if end > 0 {
-            if let Ok(n) = trimmed[..end].parse::<i64>() {
-                out.push(n);
-            }
-        }
-        cursor = start + skipped + end;
-    }
-    out
-}
-
-fn scan_strings(s: &str, key: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cursor = 0usize;
-    while let Some(rel) = s[cursor..].find(key) {
-        let start = cursor + rel + key.len();
-        let tail = &s[start..];
-        let mut end = 0usize;
-        for (i, c) in tail.char_indices() {
-            if c == '"' {
-                end = i;
-                break;
-            }
-        }
-        if end == 0 {
-            break;
-        }
-        out.push(tail[..end].to_string());
-        cursor = start + end + 1;
-    }
-    out
-}
-
-fn find_json_int(s: &str, key: &str) -> Option<i64> {
-    let p = s.find(key)?;
-    let tail = &s[p + key.len()..];
-    let colon = tail.find(':')?;
-    let num = tail[colon + 1..].trim_start();
-    let end = num
-        .find(|c: char| !c.is_ascii_digit() && c != '-')
-        .unwrap_or(num.len());
-    if end == 0 {
-        None
-    } else {
-        num[..end].parse().ok()
     }
 }
 
