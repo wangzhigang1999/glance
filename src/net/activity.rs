@@ -17,6 +17,8 @@ pub struct Activity {
     pub last_line: Option<String>,
     /// 详情文本(commit msg / comment body / PR title 首行),可能为空
     pub last_detail: Option<String>,
+    /// 事件 UTC epoch 秒(0 = 未知)
+    pub last_at_epoch: u64,
     pub open_prs: u32,
 }
 
@@ -26,9 +28,10 @@ pub fn fetch(user: &str, token: &str) -> Result<Activity> {
     // ---- 1. events(带 token 可见 private) ----
     let ev_url = format!("https://api.github.com/users/{}/events?per_page=20", user);
     let body = http_get(&ev_url, Some(token))?;
-    if let Some((line, detail)) = parse_last_event(&body) {
+    if let Some((line, detail, epoch)) = parse_last_event(&body) {
         act.last_line = Some(line);
         act.last_detail = if detail.is_empty() { None } else { Some(detail) };
+        act.last_at_epoch = epoch;
     }
 
     // ---- 2. open PRs ----
@@ -100,6 +103,8 @@ struct Event {
     repo: Option<Repo>,
     #[serde(default)]
     payload: Option<Payload>,
+    #[serde(default)]
+    created_at: Option<String>,
 }
 #[derive(serde::Deserialize)]
 struct Repo {
@@ -149,12 +154,17 @@ fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").to_string()
 }
 
-/// 返回 (摘要行, 详情)。摘要形如 "reviewed repo#123"、"pushed to repo"。
-fn parse_last_event(body: &str) -> Option<(String, String)> {
+/// 返回 (摘要行, 详情, epoch 秒)。摘要形如 "reviewed repo#123"、"pushed to repo"。
+fn parse_last_event(body: &str) -> Option<(String, String, u64)> {
     // events 接口返回数组,取第一条
     let events: Vec<Event> = serde_json::from_str(body).ok()?;
     let ev = events.into_iter().next()?;
     let repo = ev.repo.map(|r| r.name).unwrap_or_default();
+    let epoch = ev
+        .created_at
+        .as_deref()
+        .and_then(iso8601_to_epoch)
+        .unwrap_or(0);
     let pl = ev.payload.unwrap_or_default();
 
     let (line, detail) = match ev.ty.as_str() {
@@ -215,7 +225,32 @@ fn parse_last_event(body: &str) -> Option<(String, String)> {
             String::new(),
         ),
     };
-    Some((line, detail))
+    Some((line, detail, epoch))
+}
+
+/// `"2026-04-19T00:12:34Z"` → UTC epoch 秒。不做时区换算(GitHub 总是 UTC)。
+fn iso8601_to_epoch(s: &str) -> Option<u64> {
+    if s.len() < 20 || s.as_bytes()[4] != b'-' || s.as_bytes()[10] != b'T' {
+        return None;
+    }
+    let y: i32 = s.get(0..4)?.parse().ok()?;
+    let mo: u32 = s.get(5..7)?.parse().ok()?;
+    let d: u32 = s.get(8..10)?.parse().ok()?;
+    let h: u32 = s.get(11..13)?.parse().ok()?;
+    let mi: u32 = s.get(14..16)?.parse().ok()?;
+    let se: u32 = s.get(17..19)?.parse().ok()?;
+    // Howard Hinnant: days_from_civil → epoch-based days
+    let y = y - if mo <= 2 { 1 } else { 0 };
+    let era = if y >= 0 { y / 400 } else { (y - 399) / 400 };
+    let yoe = (y - era * 400) as u32;
+    let mp = if mo > 2 { mo - 3 } else { mo + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era as i64 * 146097 + doe as i64 - 719468;
+    if days < 0 {
+        return None;
+    }
+    Some(days as u64 * 86400 + h as u64 * 3600 + mi as u64 * 60 + se as u64)
 }
 
 pub fn spawn_fetcher(

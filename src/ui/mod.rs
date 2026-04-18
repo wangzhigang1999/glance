@@ -92,9 +92,10 @@ pub struct AppState {
     pub notif_top_repo: heapless::String<48>,  // 最新一条仓库 full_name
     pub notif_valid: bool,
 
-    // GitHub 活动:最近一条 event 摘要 + 详情 + open PR 数
+    // GitHub 活动:最近一条 event 摘要 + 详情 + 发生时间 + open PR 数
     pub last_event_line: heapless::String<80>,
     pub last_event_detail: heapless::String<96>,
+    pub last_event_at_epoch: u64, // 0 = 未知
     pub open_prs: u32,
     pub activity_valid: bool,
     pub activity_error: heapless::String<80>,
@@ -149,6 +150,7 @@ impl Default for AppState {
             notif_valid: false,
             last_event_line: heapless::String::new(),
             last_event_detail: heapless::String::new(),
+            last_event_at_epoch: 0,
             open_prs: 0,
             activity_valid: false,
             activity_error: heapless::String::new(),
@@ -913,6 +915,26 @@ fn render_github(
 
     // ===== LATEST y=170..202 =====
     Text::with_baseline("LATEST", Point::new(14, 170), *micro, Baseline::Top).draw(target)?;
+    // 右上:相对时间 "5m ago"
+    if state.last_event_at_epoch > 0 {
+        if let Some(now) = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_secs())
+        {
+            if now > state.last_event_at_epoch {
+                let ago = format_ago(now - state.last_event_at_epoch);
+                let w = ago.len() as i32 * 6;
+                Text::with_baseline(
+                    &ago,
+                    Point::new(WIDTH as i32 - 14 - w, 170),
+                    *micro,
+                    Baseline::Top,
+                )
+                .draw(target)?;
+            }
+        }
+    }
     if state.activity_valid && !state.last_event_line.is_empty() {
         let line_trunc = truncate_chars(&state.last_event_line, 40);
         Text::with_baseline(&line_trunc, Point::new(14, 184), *tiny, Baseline::Top).draw(target)?;
@@ -953,6 +975,23 @@ fn render_github(
     }
 
     Ok(())
+}
+
+/// 秒差格式化:"30s ago" / "5m ago" / "2h ago" / "3d ago" / "4mo ago"
+fn format_ago(sec: u64) -> heapless::String<12> {
+    let mut s: heapless::String<12> = heapless::String::new();
+    let _ = if sec < 60 {
+        core::fmt::write(&mut s, format_args!("{}s ago", sec))
+    } else if sec < 3600 {
+        core::fmt::write(&mut s, format_args!("{}m ago", sec / 60))
+    } else if sec < 86400 {
+        core::fmt::write(&mut s, format_args!("{}h ago", sec / 3600))
+    } else if sec < 30 * 86400 {
+        core::fmt::write(&mut s, format_args!("{}d ago", sec / 86400))
+    } else {
+        core::fmt::write(&mut s, format_args!("{}mo ago", sec / (30 * 86400)))
+    };
+    s
 }
 
 /// 把字节数格式化成"1.7"或"16.0"这种一位小数 MB 数。

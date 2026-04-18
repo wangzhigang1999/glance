@@ -409,6 +409,7 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
                     state.open_prs = a.open_prs;
+                    state.last_event_at_epoch = a.last_at_epoch;
                     state.activity_valid = true;
                 }
             }
