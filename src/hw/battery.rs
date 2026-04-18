@@ -17,7 +17,26 @@ use esp_idf_svc::hal::adc::oneshot::{
     AdcChannelDriver, AdcDriver,
 };
 use esp_idf_svc::hal::adc::{ADC1, ADCCH3, ADCU1};
+use esp_idf_svc::hal::delay::FreeRtos;
 use esp_idf_svc::hal::gpio::Gpio4;
+
+/// 检测 USB 主机是否插着。原理:USB 主机每 1ms 下发一个 SOF 帧,ESP32-S3 的
+/// USB_SERIAL_JTAG 外设把最近收到的帧号记在 `JFIFO_ST.sof_frame_index`(11 bit),
+/// 只要主机在枚举/活跃,计数就一直涨。间隔 3ms 读两次,值变了就是插着主机。
+/// 仅插充电器不接主机的情况下没有 SOF,会被判成电池供电——这种场景靠电压看也
+/// 没意义(正在充电,电压不稳),按电池模式展示即可。
+fn usb_host_present() -> bool {
+    // USB_SERIAL_JTAG_FRAM_NUM_REG = DR_REG_USB_SERIAL_JTAG_BASE + 0x24
+    // 低 11 位 = 最近收到的 SOF 帧号
+    const FRAM_NUM_REG: *const u32 = 0x6003_8024 as *const u32;
+    const SOF_FRAME_INDEX_MASK: u32 = 0x7FF;
+    unsafe {
+        let a = FRAM_NUM_REG.read_volatile() & SOF_FRAME_INDEX_MASK;
+        FreeRtos::delay_ms(3);
+        let b = FRAM_NUM_REG.read_volatile() & SOF_FRAME_INDEX_MASK;
+        a != b
+    }
+}
 
 const DIVIDER: f32 = 3.0;
 const USB_THRESHOLD_MV: u32 = 2500;
@@ -55,8 +74,13 @@ impl Battery {
         Ok(Self { pin })
     }
 
-    /// 读一次电量,8 次平均去抖动。
+    /// 读一次电量,8 次平均去抖动。优先通过 USB SOF 判断主机是否插着;
+    /// 主机在枚举时不管电池充没充满都算 USB 模式。
     pub fn read(&mut self) -> Result<PowerSource> {
+        if usb_host_present() {
+            return Ok(PowerSource::Usb);
+        }
+
         let mut sum: u32 = 0;
         for _ in 0..8 {
             sum += self.pin.read()? as u32;
