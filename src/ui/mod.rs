@@ -82,6 +82,8 @@ pub struct AppState {
     pub contrib: [u8; 371],         // level 0..=4
     pub contrib_counts: [u16; 371], // 当天 commit 数(per day)
     pub contrib_weeks: u16,
+    // 实际填充的天数(最后一个索引 = 今天);GraphQL 当周只到今天,不补未来日
+    pub contrib_days: u16,
     pub contrib_valid: bool,
     pub contrib_total_year: u32,
     pub contrib_error: heapless::String<80>, // 拉取失败最近一次错误,空=没错误
@@ -141,6 +143,7 @@ impl Default for AppState {
             contrib: [0u8; 371],
             contrib_counts: [0u16; 371],
             contrib_weeks: 0,
+            contrib_days: 0,
             contrib_valid: false,
             contrib_total_year: 0,
             contrib_error: heapless::String::new(),
@@ -785,18 +788,26 @@ fn render_github(
         .draw(target)?;
 
     // ===== 数据准备:最近 28 天 =====
+    // t_idx = 今天在 contrib[] 里的索引(GraphQL 当周只到今天);
+    // 今天的 Mon-first weekday = (t_idx % 7 + 6) % 7(GraphQL 是 Sun-first)
     const DAYS: usize = 28;
-    let valid_n = (state.contrib_weeks as usize) * 7;
-    let have = state.contrib_valid && valid_n >= DAYS;
-    let start = valid_n.saturating_sub(DAYS);
+    let have = state.contrib_valid && state.contrib_days >= DAYS as u16;
+    let t_idx: i32 = (state.contrib_days as i32).saturating_sub(1);
+    let today_row_mon: i32 = if t_idx >= 0 { ((t_idx % 7) + 6) % 7 } else { 6 };
     let mut commits: u32 = 0;
     let mut active: u32 = 0;
     let mut max_streak: u32 = 0;
     let mut cur_streak: u32 = 0;
     if have {
-        for i in 0..DAYS {
-            let lvl = state.contrib[start + i];
-            commits += state.contrib_counts[start + i] as u32;
+        // 往回数 27 天到今天;k=0 最旧,k=27 今天
+        for k in 0..(DAYS as i32) {
+            let idx = t_idx - (27 - k);
+            if idx < 0 {
+                continue;
+            }
+            let idx = idx as usize;
+            let lvl = state.contrib[idx];
+            commits += state.contrib_counts[idx] as u32;
             if lvl > 0 {
                 active += 1;
                 cur_streak += 1;
@@ -842,11 +853,21 @@ fn render_github(
     }
     // 格子
     if have {
-        for week in 0..4 {
-            for day in 0..7 {
-                // 按时间顺序:第 week 列是第 w 个 7-天段,day 0..6 对应该段内索引
-                let idx = (week as usize) * 7 + (day as usize);
-                let level = state.contrib[start + idx];
+        // 今天位于 (col=3, row=today_row_mon);每格日期 = 今天 +
+        // (day - today_row_mon) + (week - 3) * 7
+        for week in 0..4i32 {
+            for day in 0..7i32 {
+                let offset_days = (day - today_row_mon) + (week - 3) * 7;
+                let level = if offset_days > 0 {
+                    0 // 未来日:空框
+                } else {
+                    let idx = t_idx + offset_days;
+                    if idx < 0 {
+                        0
+                    } else {
+                        state.contrib[idx as usize]
+                    }
+                };
                 let x = grid_x + week * col_step;
                 let y = grid_y + day * row_step;
                 draw_day_cell(target, Point::new(x, y), CELL_W as u32, CELL_H as u32, level)?;

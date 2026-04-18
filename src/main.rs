@@ -353,6 +353,7 @@ fn main() -> anyhow::Result<()> {
                         state.contrib_counts[i] = (*n).min(u16::MAX as u32) as u16;
                     }
                     state.contrib_weeks = ((take_n + 6) / 7) as u16;
+                    state.contrib_days = take_n as u16;
                     state.contrib_valid = take_n > 0;
                     state.contrib_total_year = data.total_year;
                 }
