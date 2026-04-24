@@ -246,7 +246,16 @@ fn main() -> anyhow::Result<()> {
 
     loop {
         // 每轮从 config 读一次热重载值
-        let (refresh_period, auto_rotate, auto_rotate_period, tz_off, t_off, h_off, cfg_user) = {
+        let (
+            refresh_period,
+            auto_rotate,
+            auto_rotate_period,
+            tz_off,
+            t_off,
+            h_off,
+            cfg_user,
+            cfg_token_set,
+        ) = {
             let c = config.read().unwrap();
             (
                 Duration::from_secs(c.sensor_refresh_s as u64),
@@ -256,6 +265,7 @@ fn main() -> anyhow::Result<()> {
                 c.temp_off_c,
                 c.humid_off_pct,
                 c.gh_user.clone(),
+                !c.gh_token.is_empty(),
             )
         };
 
@@ -312,13 +322,14 @@ fn main() -> anyhow::Result<()> {
             });
             state.clock_date = format_local_date(tz_off);
 
-            // 同步 GitHub 用户名到 state(供 UI 渲染)
+            // 同步 GitHub 用户名 / token 状态到 state(供 UI 渲染)
             state.gh_user.clear();
             for ch in cfg_user.chars().take(40) {
                 if state.gh_user.push(ch).is_err() {
                     break;
                 }
             }
+            state.gh_token_set = cfg_token_set;
             state.battery = match battery.read() {
                 Ok(PowerSource::Battery { mv, percent }) => Some((mv, percent)),
                 Ok(PowerSource::Usb) => None,

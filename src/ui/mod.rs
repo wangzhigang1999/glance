@@ -105,6 +105,8 @@ pub struct AppState {
 
     // GitHub 用户名(运行时可改,主循环从 SharedConfig 拷过来)
     pub gh_user: heapless::String<40>,
+    // GitHub token 是否已配置(主循环从 SharedConfig 同步);未配置则 github 页整页给配置提示
+    pub gh_token_set: bool,
 
     // Flash 存储(启动时一次性填,之后不变)
     pub flash_total: u32,
@@ -160,6 +162,7 @@ impl Default for AppState {
             activity_valid: false,
             activity_error: heapless::String::new(),
             gh_user: heapless::String::new(),
+            gh_token_set: false,
             flash_total: 0,
             app_part_size: 0,
             app_used: 0,
@@ -795,12 +798,13 @@ fn render_github(
         .baseline(Baseline::Middle)
         .build();
 
+    // 未配置 user 或 token 时,整页显示配置提示,不渲染空壳面板
+    if state.gh_user.is_empty() || !state.gh_token_set {
+        return render_github_unconfigured(target, state, tiny, micro, header);
+    }
+
     let mut uname: heapless::String<48> = heapless::String::new();
-    let user_str = if state.gh_user.is_empty() {
-        "unset"
-    } else {
-        state.gh_user.as_str()
-    };
+    let user_str = state.gh_user.as_str();
     let _ = core::fmt::write(&mut uname, format_args!("@{}", user_str));
 
     // ===== 顶栏 y=0..30 =====
@@ -1040,6 +1044,97 @@ fn render_github(
         Text::with_baseline("(fetching...)", Point::new(14, 256), *tiny, Baseline::Top)
             .draw(target)?;
     }
+
+    Ok(())
+}
+
+/// 未配置 gh_user / gh_token 时的整页提示
+fn render_github_unconfigured(
+    target: &mut Display<'_>,
+    state: &AppState,
+    tiny: &MonoTextStyle<'_, BinaryColor>,
+    micro: &MonoTextStyle<'_, BinaryColor>,
+    header: &MonoTextStyle<'_, BinaryColor>,
+) -> Result<(), core::convert::Infallible> {
+    let center = embedded_graphics::text::TextStyleBuilder::new()
+        .alignment(Alignment::Center)
+        .baseline(Baseline::Top)
+        .build();
+    let center_mid = embedded_graphics::text::TextStyleBuilder::new()
+        .alignment(Alignment::Center)
+        .baseline(Baseline::Middle)
+        .build();
+
+    let cx = WIDTH as i32 / 2;
+
+    // 顶栏:GITHUB 标题 + 下面一条分隔线,布局和已配置态一致
+    Text::with_text_style("GITHUB", Point::new(cx, 7), *header, center).draw(target)?;
+    Line::new(Point::new(14, 32), Point::new(WIDTH as i32 - 14, 32))
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+        .draw(target)?;
+
+    // 中央方框 + 大字提示
+    let box_x = 40;
+    let box_y = 70;
+    let box_w = WIDTH as i32 - 80;
+    let box_h = 140;
+    Rectangle::new(
+        Point::new(box_x, box_y),
+        Size::new(box_w as u32, box_h as u32),
+    )
+    .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
+    .draw(target)?;
+
+    Text::with_text_style(
+        "NOT CONFIGURED",
+        Point::new(cx, box_y + 36),
+        *header,
+        center_mid,
+    )
+    .draw(target)?;
+
+    // 缺什么就说什么
+    let missing = if state.gh_user.is_empty() && !state.gh_token_set {
+        "missing: user & token"
+    } else if state.gh_user.is_empty() {
+        "missing: user"
+    } else {
+        "missing: token"
+    };
+    Text::with_text_style(
+        missing,
+        Point::new(cx, box_y + 72),
+        *tiny,
+        center_mid,
+    )
+    .draw(target)?;
+
+    // 给具体 URL,方便用户直接去配
+    let mut url: heapless::String<40> = heapless::String::new();
+    if let Some([a, b, c, d]) = state.ip_octets {
+        let _ = core::fmt::write(
+            &mut url,
+            format_args!("open http://{}.{}.{}.{}/settings", a, b, c, d),
+        );
+    } else {
+        let _ = url.push_str("connect wifi, then open /settings");
+    }
+    Text::with_text_style(
+        &url,
+        Point::new(cx, box_y + 108),
+        *micro,
+        center_mid,
+    )
+    .draw(target)?;
+
+    // 底栏一行提示,和已配置态的 UNREAD 区域位置一致,保持视觉平衡
+    Text::with_text_style(
+        "PAT needs: repo, notifications, read:user",
+        Point::new(cx, HEIGHT as i32 - 20),
+        *micro,
+        center_mid,
+    )
+    .draw(target)?;
 
     Ok(())
 }
