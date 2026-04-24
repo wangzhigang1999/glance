@@ -6,6 +6,8 @@
 
 pub mod activity;
 pub mod creds;
+mod gh_http;
+pub mod gh_worker;
 pub mod github;
 pub mod notifications;
 pub mod prov_ap;

@@ -3,17 +3,9 @@
 //! `/users/{user}/events` 带 token 可见 private 事件,按时间倒序;
 //! 第一条就是最新。不同 type 从 payload 不同子对象取动作/目标。
 
-use std::{
-    sync::{Arc, Mutex},
-    thread,
-    time::Duration,
-};
+use anyhow::{Context, Result};
 
-use anyhow::{anyhow, Context, Result};
-use esp_idf_svc::http::{
-    client::{Configuration, EspHttpConnection},
-    Method,
-};
+use super::gh_http::gh_request;
 
 #[derive(Debug, Clone, Default)]
 pub struct Activity {
@@ -31,8 +23,10 @@ pub fn fetch(user: &str, token: &str) -> Result<Activity> {
 
     // ---- 1. events(带 token 可见 private) ----
     let ev_url = format!("https://api.github.com/users/{}/events?per_page=20", user);
-    let body = http_get(&ev_url, Some(token))?;
-    if let Some((line, detail, epoch)) = parse_last_event(&body) {
+    log::info!("GH Activity: GET {}", ev_url);
+    let body = gh_request(&ev_url, Some(token), None)?;
+    let body = std::str::from_utf8(&body).context("events body not utf-8")?;
+    if let Some((line, detail, epoch)) = parse_last_event(body) {
         act.last_line = Some(line);
         act.last_detail = if detail.is_empty() {
             None
@@ -47,59 +41,21 @@ pub fn fetch(user: &str, token: &str) -> Result<Activity> {
         "https://api.github.com/search/issues?q=is:open+is:pr+author:{}&per_page=1",
         user
     );
-    if let Ok(body) = http_get(&search, Some(token)) {
-        #[derive(serde::Deserialize)]
-        struct Search {
-            total_count: u32,
+    log::info!("GH Activity: GET {}", search);
+    match gh_request(&search, Some(token), None) {
+        Ok(body) => {
+            #[derive(serde::Deserialize)]
+            struct Search {
+                total_count: u32,
+            }
+            if let Ok(s) = serde_json::from_slice::<Search>(&body) {
+                act.open_prs = s.total_count;
+            }
         }
-        if let Ok(s) = serde_json::from_str::<Search>(&body) {
-            act.open_prs = s.total_count;
-        }
-    } else {
-        log::warn!("activity: PR search failed (ignored)");
+        Err(_) => log::warn!("activity: PR search failed (ignored)"),
     }
 
     Ok(act)
-}
-
-fn http_get(url: &str, token: Option<&str>) -> Result<String> {
-    let config = Configuration {
-        crt_bundle_attach: Some(esp_idf_svc::sys::esp_crt_bundle_attach),
-        timeout: Some(Duration::from_secs(20)),
-        buffer_size: Some(4096),
-        buffer_size_tx: Some(1024),
-        ..Default::default()
-    };
-    let mut conn = EspHttpConnection::new(&config)?;
-
-    let auth = token.map(|t| format!("Bearer {}", t));
-    let mut headers: Vec<(&str, &str)> = vec![
-        ("user-agent", "clab/0.1"),
-        ("accept", "application/vnd.github+json"),
-        ("x-github-api-version", "2022-11-28"),
-    ];
-    if let Some(a) = auth.as_deref() {
-        headers.push(("authorization", a));
-    }
-
-    log::info!("GH Activity: GET {}", url);
-    conn.initiate_request(Method::Get, url, &headers)?;
-    conn.initiate_response()?;
-    let status = conn.status();
-    if status != 200 {
-        return Err(anyhow!("HTTP {} for {}", status, url));
-    }
-
-    let mut body: Vec<u8> = Vec::with_capacity(16 * 1024);
-    let mut chunk = [0u8; 1024];
-    loop {
-        match conn.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => body.extend_from_slice(&chunk[..n]),
-            Err(e) => return Err(anyhow!("read body: {e:?}")),
-        }
-    }
-    Ok(String::from_utf8(body).context("body not utf-8")?)
 }
 
 // ---- Event deserialize;payload 因 type 而异,所有字段都 Option ----
@@ -295,63 +251,4 @@ fn iso8601_to_epoch(s: &str) -> Option<u64> {
         return None;
     }
     Some(days as u64 * 86400 + h as u64 * 3600 + mi as u64 * 60 + se as u64)
-}
-
-pub fn spawn_fetcher(
-    config: crate::config::SharedConfig,
-    shared: Arc<Mutex<Option<Activity>>>,
-    error_shared: Arc<Mutex<String>>,
-) {
-    thread::Builder::new()
-        .name("gh-activity".into())
-        .stack_size(12 * 1024)
-        .spawn(move || {
-            // stagger:避开启动瞬间 github + notifications 同时握 TLS 挤 lwip socket
-            let stagger = config.read().unwrap().activity_stagger_s as u64;
-            thread::sleep(Duration::from_secs(stagger));
-            loop {
-                let (user, token, ok_s, err_s) = {
-                    let c = config.read().unwrap();
-                    (
-                        c.gh_user.clone(),
-                        c.gh_token.clone(),
-                        c.activity_ok_s as u64,
-                        c.activity_err_s as u64,
-                    )
-                };
-                if user.is_empty() || token.is_empty() {
-                    if let Ok(mut e) = error_shared.lock() {
-                        *e = "no user/token".into();
-                    }
-                    thread::sleep(Duration::from_secs(30));
-                    continue;
-                }
-                let interval = match fetch(&user, &token) {
-                    Ok(a) => {
-                        log::info!(
-                            "GH Activity: last={:?} open_prs={}",
-                            a.last_line,
-                            a.open_prs,
-                        );
-                        if let Ok(mut g) = shared.lock() {
-                            *g = Some(a);
-                        }
-                        if let Ok(mut e) = error_shared.lock() {
-                            e.clear();
-                        }
-                        Duration::from_secs(ok_s)
-                    }
-                    Err(e) => {
-                        let msg = format!("{e:#}");
-                        log::warn!("GH Activity fetch failed: {msg}");
-                        if let Ok(mut es) = error_shared.lock() {
-                            *es = msg;
-                        }
-                        Duration::from_secs(err_s)
-                    }
-                };
-                thread::sleep(interval);
-            }
-        })
-        .expect("spawn gh activity fetcher");
 }

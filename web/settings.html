@@ -199,74 +199,34 @@
 
             <section class="card">
                 <h2>
-                    <i class="fa-solid fa-clock-rotate-left"></i>Fetcher
-                    intervals (seconds)
+                    <i class="fa-solid fa-clock-rotate-left"></i>GitHub fetcher
+                    (seconds)
                 </h2>
-                <div class="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="label">Contribution ok</label
+                        <label class="label">Refresh (ok)</label
                         ><input
                             class="input"
                             type="number"
                             min="30"
                             max="86400"
-                            id="contrib_ok_s"
+                            id="gh_refresh_s"
                         />
                     </div>
                     <div>
-                        <label class="label">Contribution err</label
+                        <label class="label">Backoff (err)</label
                         ><input
                             class="input"
                             type="number"
                             min="30"
                             max="86400"
-                            id="contrib_err_s"
-                        />
-                    </div>
-                    <div>
-                        <label class="label">Notifications</label
-                        ><input
-                            class="input"
-                            type="number"
-                            min="30"
-                            max="86400"
-                            id="notif_s"
-                        />
-                    </div>
-                    <div>
-                        <label class="label">Activity ok</label
-                        ><input
-                            class="input"
-                            type="number"
-                            min="30"
-                            max="86400"
-                            id="activity_ok_s"
-                        />
-                    </div>
-                    <div>
-                        <label class="label">Activity err</label
-                        ><input
-                            class="input"
-                            type="number"
-                            min="30"
-                            max="86400"
-                            id="activity_err_s"
-                        />
-                    </div>
-                    <div>
-                        <label class="label">Activity stagger</label
-                        ><input
-                            class="input"
-                            type="number"
-                            min="0"
-                            max="600"
-                            id="activity_stagger_s"
+                            id="gh_err_s"
                         />
                     </div>
                 </div>
                 <div class="hint mt-3">
-                    Shorter = more fresh, more GitHub API quota used. Defaults:
-                    contrib 300/120, activity 180/120, notif 180.
+                    Single worker串行拉 contribution / notifications / activity,
+                    一个周期跑完整轮。默认 300 / 120。
                 </div>
             </section>
 
@@ -391,12 +351,8 @@
                 const TXT_FIELDS = ["gh_user", "gh_token"];
                 const BOOL_FIELDS = ["auto_rotate"];
                 const NUM_FIELDS = [
-                    "contrib_ok_s",
-                    "contrib_err_s",
-                    "activity_ok_s",
-                    "activity_err_s",
-                    "activity_stagger_s",
-                    "notif_s",
+                    "gh_refresh_s",
+                    "gh_err_s",
                     "sensor_refresh_s",
                     "auto_rotate_s",
                     "temp_off_c",

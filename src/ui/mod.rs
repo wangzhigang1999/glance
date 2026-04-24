@@ -361,16 +361,9 @@ fn render_clock(
     let cx = WIDTH as i32 / 2;
     let y_base = Y_SEP_CLOCK - 8; // baseline
 
-    let text: heapless::String<8> = match &state.clock_hm {
-        Some(s) => s.clone(),
-        None => {
-            let mut t: heapless::String<8> = heapless::String::new();
-            let _ = t.push_str("--:--");
-            t
-        }
-    };
+    let text = state.clock_hm.as_deref().unwrap_or("--:--");
     let _ = font.render_aligned(
-        text.as_str(),
+        text,
         Point::new(cx, y_base),
         VerticalPosition::Baseline,
         HorizontalAlignment::Center,
@@ -1157,26 +1150,25 @@ fn fmt_mb(bytes: u32) -> heapless::String<8> {
     s
 }
 
+/// 按 UTF-8 字符数截断,超长加 ".." 后缀。单次扫描 `char_indices`。
+/// (原实现 `chars().count()` 先走一遍再 enumerate 又走一遍,O(2n))
 fn truncate_chars(src: &str, max_chars: usize) -> heapless::String<80> {
-    let mut out: heapless::String<80> = heapless::String::new();
-    let n = src.chars().count();
-    if n <= max_chars {
-        for c in src.chars() {
-            if out.push(c).is_err() {
-                break;
-            }
+    let keep = max_chars.saturating_sub(1);
+    let mut cut_at = 0usize;
+    for (n, (byte, _)) in src.char_indices().enumerate() {
+        if n == keep {
+            cut_at = byte;
         }
-    } else {
-        for (i, c) in src.chars().enumerate() {
-            if i >= max_chars.saturating_sub(1) {
-                break;
-            }
-            if out.push(c).is_err() {
-                break;
-            }
+        if n == max_chars {
+            let mut out: heapless::String<80> = heapless::String::new();
+            let _ = out.push_str(&src[..cut_at]);
+            let _ = out.push_str("..");
+            return out;
         }
-        let _ = out.push_str("..");
     }
+    // 没超出:原样输出
+    let mut out: heapless::String<80> = heapless::String::new();
+    let _ = out.push_str(src);
     out
 }
 

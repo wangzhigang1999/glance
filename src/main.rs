@@ -49,10 +49,11 @@ use crate::{
         system::{mac_suffix, read_flash_stats, read_sys_stats},
     },
     net::{
-        activity::{self, Activity},
+        activity::Activity,
         format_local_date, format_local_hms,
-        github::{self, ContribData},
-        notifications::{self, NotifSummary},
+        gh_worker,
+        github::ContribData,
+        notifications::NotifSummary,
         screen_http, CredsStore, Provisioner, Sntp, WifiCreds, WifiManager,
     },
     ui::{AppState, Page},
@@ -91,18 +92,15 @@ fn main() -> anyhow::Result<()> {
     }
     let loaded = config_store.load(base);
     log::info!(
-        "Config loaded: user={} token={} contrib={}/{} act={}/{} notif={} refresh={} tz={}",
+        "Config loaded: user={} token={} gh={}/{} refresh={} tz={}",
         loaded.gh_user,
         if loaded.gh_token.is_empty() {
             "(none)"
         } else {
             "(set)"
         },
-        loaded.contrib_ok_s,
-        loaded.contrib_err_s,
-        loaded.activity_ok_s,
-        loaded.activity_err_s,
-        loaded.notif_s,
+        loaded.gh_refresh_s,
+        loaded.gh_err_s,
         loaded.sensor_refresh_s,
         loaded.tz_off_s,
     );
@@ -211,14 +209,12 @@ fn main() -> anyhow::Result<()> {
     // _sntp 必须保持在作用域内,否则 drop 会 sntp_stop() 终结对时
     let _sntp = Sntp::start()?;
 
-    // ---- GitHub 贡献数据:GraphQL(每轮从 config 读 user/token/间隔) ----
+    // ---- GitHub 共享状态(contrib / notif / activity) ----
     let contrib_shared: Arc<Mutex<Option<ContribData>>> = Arc::new(Mutex::new(None));
     let contrib_err_shared: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-    github::spawn_fetcher(
-        config.clone(),
-        contrib_shared.clone(),
-        contrib_err_shared.clone(),
-    );
+    let notif_shared: Arc<Mutex<Option<NotifSummary>>> = Arc::new(Mutex::new(None));
+    let activity_shared: Arc<Mutex<Option<Activity>>> = Arc::new(Mutex::new(None));
+    let activity_err_shared: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
 
     // ---- 屏幕镜像 HTTP 服务 + 运行时配置 API ----
     let screen_shared = screen_http::new_shared_fb();
@@ -237,17 +233,16 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    // ---- GitHub Notifications + Activity(同样走 config) ----
-    let notif_shared: Arc<Mutex<Option<NotifSummary>>> = Arc::new(Mutex::new(None));
-    let activity_shared: Arc<Mutex<Option<Activity>>> = Arc::new(Mutex::new(None));
-    let activity_err_shared: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-    notifications::spawn_fetcher(config.clone(), notif_shared.clone());
-    activity::spawn_fetcher(
+    // ---- 单线程 GH worker(三家串行轮询,省 ~24KB SRAM vs 三线程各 12KB 栈) ----
+    gh_worker::spawn(
         config.clone(),
+        contrib_shared.clone(),
+        contrib_err_shared.clone(),
+        notif_shared.clone(),
         activity_shared.clone(),
         activity_err_shared.clone(),
     );
-    log::info!("GH fetchers: contribution + notifications + activity spawned");
+    log::info!("GH worker: contribution + notifications + activity (merged)");
     // 这里不阻塞,主循环里每次直接看 SystemTime 是否 > 2020 来判"是否已同步"
     // 理由:sntp_get_sync_status 在 poll 周期内会从 COMPLETED 翻回 IN_PROGRESS,不稳定
 
@@ -261,27 +256,14 @@ fn main() -> anyhow::Result<()> {
     let tick = Duration::from_millis(100);
 
     loop {
-        // 每轮从 config 读一次热重载值
-        let (
-            refresh_period,
-            auto_rotate,
-            auto_rotate_period,
-            tz_off,
-            t_off,
-            h_off,
-            cfg_user,
-            cfg_token_set,
-        ) = {
+        // 每 tick(100ms)只读会被"按钮判翻页"立即用到的小字段,不 clone String;
+        // 重字段(gh_user 等)挪到 `if due` 分支下面,频率降到 sensor_refresh_s(通常 5s)
+        let (refresh_period, auto_rotate, auto_rotate_period) = {
             let c = config.read().unwrap();
             (
                 Duration::from_secs(c.sensor_refresh_s as u64),
                 c.auto_rotate,
                 Duration::from_secs(c.auto_rotate_s as u64),
-                c.tz_off_s as i64,
-                c.temp_off_c,
-                c.humid_off_pct,
-                c.gh_user.clone(),
-                !c.gh_token.is_empty(),
             )
         };
 
@@ -308,6 +290,18 @@ fn main() -> anyhow::Result<()> {
 
         let due = last_refresh.elapsed() >= refresh_period;
         if page_changed || due {
+            // 刷新周期才需要的慢路径字段:时区 / 传感器偏移 / gh_user 一次性读出
+            let (tz_off, t_off, h_off, cfg_token_set) = {
+                let c = config.read().unwrap();
+                copy_truncated(&mut state.gh_user, &c.gh_user);
+                (
+                    c.tz_off_s as i64,
+                    c.temp_off_c,
+                    c.humid_off_pct,
+                    !c.gh_token.is_empty(),
+                )
+            };
+            state.gh_token_set = cfg_token_set;
             if due {
                 n = n.saturating_add(1);
                 match sensor.read() {
@@ -337,19 +331,11 @@ fn main() -> anyhow::Result<()> {
             state.rssi = wifi.rssi();
             state.clock_hm = format_local_hms(tz_off).map(|s| {
                 let mut out: heapless::String<8> = heapless::String::new();
-                let _ = out.push_str(&s[..5.min(s.len())]);
+                let _ = out.push_str(s.get(..5).unwrap_or(s.as_str()));
                 out
             });
             state.clock_date = format_local_date(tz_off);
 
-            // 同步 GitHub 用户名 / token 状态到 state(供 UI 渲染)
-            state.gh_user.clear();
-            for ch in cfg_user.chars().take(40) {
-                if state.gh_user.push(ch).is_err() {
-                    break;
-                }
-            }
-            state.gh_token_set = cfg_token_set;
             state.battery = match battery.read() {
                 Ok(PowerSource::Battery { mv, percent }) => Some((mv, percent)),
                 Ok(PowerSource::Usb) => None,
@@ -391,12 +377,7 @@ fn main() -> anyhow::Result<()> {
             }
             // 贡献错误信息(若有)
             if let Ok(e) = contrib_err_shared.lock() {
-                state.contrib_error.clear();
-                for c in e.chars() {
-                    if state.contrib_error.push(c).is_err() {
-                        break;
-                    }
-                }
+                copy_truncated(&mut state.contrib_error, &e);
             }
 
             // GitHub Notifications:复制到 state(只取最新一条)
@@ -406,16 +387,8 @@ fn main() -> anyhow::Result<()> {
                     state.notif_top_title.clear();
                     state.notif_top_repo.clear();
                     if let Some(first) = s.items.first() {
-                        for c in first.title.chars() {
-                            if state.notif_top_title.push(c).is_err() {
-                                break;
-                            }
-                        }
-                        for c in first.repo.chars() {
-                            if state.notif_top_repo.push(c).is_err() {
-                                break;
-                            }
-                        }
+                        copy_truncated(&mut state.notif_top_title, &first.title);
+                        copy_truncated(&mut state.notif_top_repo, &first.repo);
                     }
                     state.notif_valid = true;
                 }
@@ -426,19 +399,11 @@ fn main() -> anyhow::Result<()> {
                 if let Some(a) = g.as_ref() {
                     state.last_event_line.clear();
                     if let Some(l) = a.last_line.as_deref() {
-                        for c in l.chars() {
-                            if state.last_event_line.push(c).is_err() {
-                                break;
-                            }
-                        }
+                        copy_truncated(&mut state.last_event_line, l);
                     }
                     state.last_event_detail.clear();
                     if let Some(d) = a.last_detail.as_deref() {
-                        for c in d.chars() {
-                            if state.last_event_detail.push(c).is_err() {
-                                break;
-                            }
-                        }
+                        copy_truncated(&mut state.last_event_detail, d);
                     }
                     state.open_prs = a.open_prs;
                     state.last_event_at_epoch = a.last_at_epoch;
@@ -446,12 +411,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             if let Ok(e) = activity_err_shared.lock() {
-                state.activity_error.clear();
-                for c in e.chars() {
-                    if state.activity_error.push(c).is_err() {
-                        break;
-                    }
-                }
+                copy_truncated(&mut state.activity_error, &e);
             }
 
             let _ = ui::render(&mut display, &state, page);
@@ -557,7 +517,10 @@ fn obtain_creds(
         let _ = wifi.force_stop();
 
         state.prov_hint.clear();
-        let _ = write_owned(&mut state.prov_hint, "connecting ", &creds.ssid);
+        {
+            use core::fmt::Write;
+            let _ = write!(state.prov_hint, "connecting {}", creds.ssid);
+        }
         let _ = ui::render(display, state, Page::Dashboard);
         let _ = display.flush();
 
@@ -589,11 +552,18 @@ fn try_connect_n(wifi: &mut WifiManager, creds: &WifiCreds, budget: u32) -> bool
     false
 }
 
-fn write_owned(
-    out: &mut heapless::String<32>,
-    prefix: &str,
-    suffix: &heapless::String<32>,
-) -> core::fmt::Result {
-    use core::fmt::Write;
-    write!(out, "{prefix}{suffix}")
+/// 把 `src` 按 UTF-8 字符边界尽量多地拷入 `dst`(不超 capacity),先 clear。
+/// 替换原先散落在主循环各处的 `for c in s.chars() { dst.push(c) }` 模式。
+fn copy_truncated<const N: usize>(dst: &mut heapless::String<N>, src: &str) {
+    dst.clear();
+    let cap = dst.capacity();
+    let mut end = 0;
+    for (i, c) in src.char_indices() {
+        let next = i + c.len_utf8();
+        if next > cap {
+            break;
+        }
+        end = next;
+    }
+    let _ = dst.push_str(&src[..end]);
 }

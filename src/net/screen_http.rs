@@ -32,7 +32,7 @@ use esp_idf_svc::{
 
 use crate::{
     config::{clamp, ConfigStore, SharedConfig},
-    display::framebuffer::{pixel_index_mask, BUF_LEN, HEIGHT, WIDTH},
+    display::framebuffer::{BUF_LEN, HEIGHT, WIDTH},
     net::{
         creds::{CredsStore, MAX_SLOTS as WIFI_MAX_SLOTS},
         wifi::WifiCreds,
@@ -43,6 +43,28 @@ pub type SharedFb = Arc<Mutex<Vec<u8>>>;
 
 pub fn new_shared_fb() -> SharedFb {
     Arc::new(Mutex::new(vec![0xFFu8; BUF_LEN]))
+}
+
+/// 统一读 body 到 `$buf`,返回切片到有效字节。
+/// 之前四处 handler 各写一遍同一套 `loop match req.read(...)`。
+macro_rules! read_body {
+    ($req:expr, $buf:expr) => {{
+        let buf_ref = &mut $buf;
+        let mut total = 0usize;
+        loop {
+            match $req.read(&mut buf_ref[total..]) {
+                Ok(0) => break,
+                Ok(n) => {
+                    total += n;
+                    if total >= buf_ref.len() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        &buf_ref[..total]
+    }};
 }
 
 const HTML: &str = include_str!("../../web/live.html");
@@ -188,20 +210,8 @@ pub fn start(
         move |mut req| -> Result<(), anyhow::Error> {
             // 读 body,限制 4KB 防溢出
             let mut buf = [0u8; 4096];
-            let mut total = 0usize;
-            loop {
-                match req.read(&mut buf[total..]) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        total += n;
-                        if total >= buf.len() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-            let body = std::str::from_utf8(&buf[..total]).unwrap_or("");
+            let body_bytes = read_body!(req, buf);
+            let body = std::str::from_utf8(body_bytes).unwrap_or("");
             let mut updated = {
                 let c = cfg_for_post.read().unwrap();
                 c.clone()
@@ -245,20 +255,8 @@ pub fn start(
         Method::Post,
         move |mut req| -> Result<(), anyhow::Error> {
             let mut buf = [0u8; 512];
-            let mut total = 0usize;
-            loop {
-                match req.read(&mut buf[total..]) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        total += n;
-                        if total >= buf.len() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-            let body = std::str::from_utf8(&buf[..total]).unwrap_or("");
+            let body_bytes = read_body!(req, buf);
+            let body = std::str::from_utf8(body_bytes).unwrap_or("");
             #[derive(serde::Deserialize, Default)]
             struct WhoamiReq {
                 #[serde(default)]
@@ -358,20 +356,8 @@ pub fn start(
         Method::Post,
         move |mut req| -> Result<(), anyhow::Error> {
             let mut buf = [0u8; 512];
-            let mut total = 0usize;
-            loop {
-                match req.read(&mut buf[total..]) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        total += n;
-                        if total >= buf.len() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-            let body = std::str::from_utf8(&buf[..total]).unwrap_or("");
+            let body_bytes = read_body!(req, buf);
+            let body = std::str::from_utf8(body_bytes).unwrap_or("");
             #[derive(serde::Deserialize, Default)]
             struct Add {
                 #[serde(default)]
@@ -417,20 +403,8 @@ pub fn start(
         Method::Post,
         move |mut req| -> Result<(), anyhow::Error> {
             let mut buf = [0u8; 256];
-            let mut total = 0usize;
-            loop {
-                match req.read(&mut buf[total..]) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        total += n;
-                        if total >= buf.len() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-            let body = std::str::from_utf8(&buf[..total]).unwrap_or("");
+            let body_bytes = read_body!(req, buf);
+            let body = std::str::from_utf8(body_bytes).unwrap_or("");
             #[derive(serde::Deserialize, Default)]
             struct Rm {
                 #[serde(default)]
@@ -553,12 +527,8 @@ struct ConfigView<'a> {
     gh_user: &'a str,
     gh_token: String,
     gh_token_set: bool,
-    contrib_ok_s: u32,
-    contrib_err_s: u32,
-    activity_ok_s: u32,
-    activity_err_s: u32,
-    activity_stagger_s: u32,
-    notif_s: u32,
+    gh_refresh_s: u32,
+    gh_err_s: u32,
     sensor_refresh_s: u32,
     auto_rotate: bool,
     auto_rotate_s: u32,
@@ -580,12 +550,8 @@ fn emit_config_json(c: &crate::config::RuntimeConfig, mask_token: bool) -> Strin
         gh_user: &c.gh_user,
         gh_token: token_display,
         gh_token_set: !c.gh_token.is_empty(),
-        contrib_ok_s: c.contrib_ok_s,
-        contrib_err_s: c.contrib_err_s,
-        activity_ok_s: c.activity_ok_s,
-        activity_err_s: c.activity_err_s,
-        activity_stagger_s: c.activity_stagger_s,
-        notif_s: c.notif_s,
+        gh_refresh_s: c.gh_refresh_s,
+        gh_err_s: c.gh_err_s,
         sensor_refresh_s: c.sensor_refresh_s,
         auto_rotate: c.auto_rotate,
         auto_rotate_s: c.auto_rotate_s,
@@ -602,12 +568,8 @@ fn emit_config_json(c: &crate::config::RuntimeConfig, mask_token: bool) -> Strin
 struct ConfigPatch {
     gh_user: Option<String>,
     gh_token: Option<String>,
-    contrib_ok_s: Option<u32>,
-    contrib_err_s: Option<u32>,
-    activity_ok_s: Option<u32>,
-    activity_err_s: Option<u32>,
-    activity_stagger_s: Option<u32>,
-    notif_s: Option<u32>,
+    gh_refresh_s: Option<u32>,
+    gh_err_s: Option<u32>,
     sensor_refresh_s: Option<u32>,
     auto_rotate: Option<bool>,
     auto_rotate_s: Option<u32>,
@@ -629,23 +591,11 @@ fn apply_json_patch(c: &mut crate::config::RuntimeConfig, body: &str) {
             c.gh_token = v;
         }
     }
-    if let Some(v) = p.contrib_ok_s {
-        c.contrib_ok_s = v;
+    if let Some(v) = p.gh_refresh_s {
+        c.gh_refresh_s = v;
     }
-    if let Some(v) = p.contrib_err_s {
-        c.contrib_err_s = v;
-    }
-    if let Some(v) = p.activity_ok_s {
-        c.activity_ok_s = v;
-    }
-    if let Some(v) = p.activity_err_s {
-        c.activity_err_s = v;
-    }
-    if let Some(v) = p.activity_stagger_s {
-        c.activity_stagger_s = v;
-    }
-    if let Some(v) = p.notif_s {
-        c.notif_s = v;
+    if let Some(v) = p.gh_err_s {
+        c.gh_err_s = v;
     }
     if let Some(v) = p.sensor_refresh_s {
         c.sensor_refresh_s = v;
@@ -715,19 +665,36 @@ fn encode_bmp(fb: &[u8]) -> Vec<u8> {
     // ---- pixel data ----
     // 每行 ROW 字节,BMP MSB-first。bit=1 表示黑(palette[1])。
     // fb bit=0 表示前景(黑)。我们要把 "黑" 映射到 bit=1。
+    //
+    // 优化:原写法 300*400=12 万次 `pixel_index_mask` 函数调用 + 分支。
+    // 在固定 y 下 `inv_y / blk_y / local_y / shift` 全部常量,只有 byte_x 扫;
+    // fb 里一个 byte_x 字节同时包含"偶数 x(local_x=0)"和"奇数 x(local_x=1)"两像素,
+    // 一趟就消化 2 个 BMP 像素位,`pixel_index_mask` 完全不必入热循环。
+    const H4: usize = HEIGHT as usize / 4; // fb 步长常量
     let row_start = out.len();
     out.resize(row_start + PIXEL_DATA_LEN, 0);
     for y in 0..H {
+        let inv_y = H - 1 - y;
+        let blk_y = inv_y >> 2;
+        let local_y = (inv_y & 3) as u32;
+        // 同一 fb 字节里,local_x=0 的位是 (7-2*local_y),local_x=1 的位是 (6-2*local_y)
+        let mask_e: u8 = 1 << (7 - 2 * local_y);
+        let mask_o: u8 = 1 << (6 - 2 * local_y);
+
         let out_row = &mut out[row_start + y * ROW..row_start + y * ROW + ROW];
         for x_byte in 0..(W / 8) {
+            // BMP byte x_byte 覆盖 8 个像素(x = 8*x_byte..8*x_byte+7),
+            // 对应 4 个 fb byte_x(每 fb 字节拿 2 个像素)
+            let base = 4 * x_byte;
             let mut b: u8 = 0;
-            for bit in 0..8 {
-                let x = x_byte * 8 + bit;
-                let (idx, mask) = pixel_index_mask(x as u16, y as u16);
-                // fb 前景 bit=0 → 显示黑 → BMP bit=1
-                let fg = (fb[idx] & mask) == 0;
-                if fg {
-                    b |= 1 << (7 - bit);
+            for k in 0..4u32 {
+                let fb_byte = fb[(base + k as usize) * H4 + blk_y];
+                // fg bit=0 → 显示黑 → BMP bit=1
+                if fb_byte & mask_e == 0 {
+                    b |= 1 << (7 - 2 * k);
+                }
+                if fb_byte & mask_o == 0 {
+                    b |= 1 << (6 - 2 * k);
                 }
             }
             out_row[x_byte] = b;

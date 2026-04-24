@@ -15,13 +15,9 @@ pub struct RuntimeConfig {
     // --- GitHub 身份 ---
     pub gh_user: String,
     pub gh_token: String,
-    // --- fetcher 周期 (秒) ---
-    pub contrib_ok_s: u32,
-    pub contrib_err_s: u32,
-    pub activity_ok_s: u32,
-    pub activity_err_s: u32,
-    pub activity_stagger_s: u32,
-    pub notif_s: u32,
+    // --- GitHub fetcher 周期 (秒);contrib/notif/activity 共用同一 worker 串行轮询 ---
+    pub gh_refresh_s: u32,
+    pub gh_err_s: u32,
     // --- 主循环 ---
     pub sensor_refresh_s: u32,
     pub auto_rotate: bool,
@@ -40,12 +36,8 @@ impl Default for RuntimeConfig {
         Self {
             gh_user: String::new(),
             gh_token: String::new(),
-            contrib_ok_s: 300,
-            contrib_err_s: 120,
-            activity_ok_s: 180,
-            activity_err_s: 120,
-            activity_stagger_s: 8,
-            notif_s: 180,
+            gh_refresh_s: 300,
+            gh_err_s: 120,
             sensor_refresh_s: 5,
             auto_rotate: false,
             auto_rotate_s: 15,
@@ -65,12 +57,8 @@ pub struct ConfigStore {
 // NVS key 一览(短名 ≤15 char)
 const K_USER: &str = "gh_user";
 const K_TOKEN: &str = "gh_token";
-const K_CINT_OK: &str = "cint_ok";
-const K_CINT_ERR: &str = "cint_err";
-const K_AINT_OK: &str = "aint_ok";
-const K_AINT_ERR: &str = "aint_err";
-const K_AINT_STG: &str = "aint_stg";
-const K_NINT: &str = "nint";
+const K_GH_OK: &str = "gh_ok";
+const K_GH_ERR: &str = "gh_err";
 const K_SREFR: &str = "srefr";
 const K_ROT_ON: &str = "rot_on";
 const K_ROT_SEC: &str = "rot_sec";
@@ -78,6 +66,12 @@ const K_T_OFF_CC: &str = "t_off_cc";
 const K_H_OFF_CC: &str = "h_off_cc";
 const K_TZ_OFF: &str = "tz_off";
 const K_SF_N: &str = "sf_n";
+
+// 旧 key(仅迁移读一次用,读到就当 seed;save 时不再写回,NVS 里会被静默保留)
+const K_LEGACY_CINT_OK: &str = "cint_ok";
+const K_LEGACY_AINT_OK: &str = "aint_ok";
+const K_LEGACY_CINT_ERR: &str = "cint_err";
+const K_LEGACY_AINT_ERR: &str = "aint_err";
 
 impl ConfigStore {
     pub fn new(partition: EspDefaultNvsPartition) -> Result<Self> {
@@ -99,23 +93,20 @@ impl ConfigStore {
                 base.gh_token = s.into();
             }
         }
-        if let Ok(Some(v)) = self.nvs.get_u32(K_CINT_OK) {
-            base.contrib_ok_s = v;
+        // 旧字段 → 新字段迁移:优先用新 key,否则拿旧 contrib/activity 的 ok/err 当 seed
+        if let Ok(Some(v)) = self.nvs.get_u32(K_GH_OK) {
+            base.gh_refresh_s = v;
+        } else if let Ok(Some(v)) = self.nvs.get_u32(K_LEGACY_CINT_OK) {
+            base.gh_refresh_s = v;
+        } else if let Ok(Some(v)) = self.nvs.get_u32(K_LEGACY_AINT_OK) {
+            base.gh_refresh_s = v;
         }
-        if let Ok(Some(v)) = self.nvs.get_u32(K_CINT_ERR) {
-            base.contrib_err_s = v;
-        }
-        if let Ok(Some(v)) = self.nvs.get_u32(K_AINT_OK) {
-            base.activity_ok_s = v;
-        }
-        if let Ok(Some(v)) = self.nvs.get_u32(K_AINT_ERR) {
-            base.activity_err_s = v;
-        }
-        if let Ok(Some(v)) = self.nvs.get_u32(K_AINT_STG) {
-            base.activity_stagger_s = v;
-        }
-        if let Ok(Some(v)) = self.nvs.get_u32(K_NINT) {
-            base.notif_s = v;
+        if let Ok(Some(v)) = self.nvs.get_u32(K_GH_ERR) {
+            base.gh_err_s = v;
+        } else if let Ok(Some(v)) = self.nvs.get_u32(K_LEGACY_CINT_ERR) {
+            base.gh_err_s = v;
+        } else if let Ok(Some(v)) = self.nvs.get_u32(K_LEGACY_AINT_ERR) {
+            base.gh_err_s = v;
         }
         if let Ok(Some(v)) = self.nvs.get_u32(K_SREFR) {
             base.sensor_refresh_s = v;
@@ -144,12 +135,8 @@ impl ConfigStore {
     pub fn save(&self, c: &RuntimeConfig) -> Result<()> {
         let _ = self.nvs.set_str(K_USER, &c.gh_user)?;
         let _ = self.nvs.set_str(K_TOKEN, &c.gh_token)?;
-        let _ = self.nvs.set_u32(K_CINT_OK, c.contrib_ok_s)?;
-        let _ = self.nvs.set_u32(K_CINT_ERR, c.contrib_err_s)?;
-        let _ = self.nvs.set_u32(K_AINT_OK, c.activity_ok_s)?;
-        let _ = self.nvs.set_u32(K_AINT_ERR, c.activity_err_s)?;
-        let _ = self.nvs.set_u32(K_AINT_STG, c.activity_stagger_s)?;
-        let _ = self.nvs.set_u32(K_NINT, c.notif_s)?;
+        let _ = self.nvs.set_u32(K_GH_OK, c.gh_refresh_s)?;
+        let _ = self.nvs.set_u32(K_GH_ERR, c.gh_err_s)?;
         let _ = self.nvs.set_u32(K_SREFR, c.sensor_refresh_s)?;
         let _ = self.nvs.set_u8(K_ROT_ON, c.auto_rotate as u8)?;
         let _ = self.nvs.set_u32(K_ROT_SEC, c.auto_rotate_s)?;
@@ -175,12 +162,8 @@ pub fn clamp(c: &mut RuntimeConfig) {
             *v = hi;
         }
     }
-    clip(&mut c.contrib_ok_s, 30, 24 * 3600);
-    clip(&mut c.contrib_err_s, 30, 24 * 3600);
-    clip(&mut c.activity_ok_s, 30, 24 * 3600);
-    clip(&mut c.activity_err_s, 30, 24 * 3600);
-    clip(&mut c.activity_stagger_s, 0, 600);
-    clip(&mut c.notif_s, 30, 24 * 3600);
+    clip(&mut c.gh_refresh_s, 30, 24 * 3600);
+    clip(&mut c.gh_err_s, 30, 24 * 3600);
     clip(&mut c.sensor_refresh_s, 1, 3600);
     clip(&mut c.auto_rotate_s, 3, 3600);
     clip(&mut c.splash_flash, 0, 64);
