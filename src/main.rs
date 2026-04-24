@@ -165,7 +165,7 @@ fn main() -> anyhow::Result<()> {
     state.mac_suffix = mac.clone();
 
     // ---- NVS creds ----
-    let creds_store = CredsStore::new(nvs.clone())?;
+    let creds_store = Arc::new(CredsStore::new(nvs.clone())?);
     let stored_creds = creds_store.load()?;
 
     // ---- WiFi manager ----
@@ -213,6 +213,7 @@ fn main() -> anyhow::Result<()> {
         http_next_flag.clone(),
         config.clone(),
         config_store.clone(),
+        creds_store.clone(),
     ) {
         Ok(s) => Some(s),
         Err(e) => {

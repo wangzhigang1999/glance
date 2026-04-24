@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <title>RLCD Setup</title>
+        <style>
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+                font-family:
+                    -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+            }
+            body {
+                background: #f8f7f4;
+                color: #252119;
+                min-height: 100vh;
+                display: grid;
+                place-items: center;
+                padding: 20px;
+            }
+            .card {
+                background: #fff;
+                border: 1px solid #dcd9cf;
+                border-radius: 14px;
+                padding: 28px;
+                max-width: 420px;
+                width: 100%;
+                box-shadow: 0 6px 24px rgba(0, 0, 0, 0.05);
+                text-align: center;
+            }
+            .brand {
+                font-size: 11px;
+                letter-spacing: 0.12em;
+                text-transform: uppercase;
+                color: #bc3908;
+                font-weight: 700;
+                margin-bottom: 10px;
+            }
+            h1 {
+                font-size: 22px;
+                margin-bottom: 10px;
+                font-weight: 700;
+            }
+            .sub {
+                color: #6b655c;
+                font-size: 13.5px;
+                line-height: 1.6;
+            }
+            code {
+                font-family: ui-monospace, Consolas, monospace;
+                background: #f1efe9;
+                padding: 2px 6px;
+                border-radius: 4px;
+                font-size: 13px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <div class="brand">RLCD Setup</div>
+            <h1>Trying {SSID}…</h1>
+            <p class="sub">
+                Check the device screen. On success it will switch to your
+                WiFi.<br />If it fails, reconnect to <code>RLCD-Setup</code> and
+                try again.
+            </p>
+        </div>
+    </body>
+</html>

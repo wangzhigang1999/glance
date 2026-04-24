@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <title>RLCD Setup</title>
+        <style>
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+                font-family:
+                    -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+            }
+            body {
+                background: #f8f7f4;
+                color: #252119;
+                min-height: 100vh;
+                display: grid;
+                place-items: center;
+                padding: 20px;
+            }
+            .card {
+                background: #fff;
+                border: 1px solid #dcd9cf;
+                border-radius: 14px;
+                padding: 28px;
+                max-width: 420px;
+                width: 100%;
+                box-shadow: 0 6px 24px rgba(0, 0, 0, 0.05);
+            }
+            .brand {
+                font-size: 11px;
+                letter-spacing: 0.12em;
+                text-transform: uppercase;
+                color: #bc3908;
+                font-weight: 700;
+                margin-bottom: 10px;
+            }
+            h1 {
+                font-size: 22px;
+                margin-bottom: 6px;
+                font-weight: 700;
+            }
+            .sub {
+                color: #6b655c;
+                font-size: 13.5px;
+                margin-bottom: 22px;
+                line-height: 1.5;
+            }
+            label {
+                font-size: 12.5px;
+                font-weight: 600;
+                display: block;
+                margin-bottom: 6px;
+                color: #3a342a;
+            }
+            input {
+                width: 100%;
+                padding: 11px 13px;
+                border: 1px solid #dcd9cf;
+                border-radius: 9px;
+                font-size: 15px;
+                margin-bottom: 16px;
+                background: #fff;
+                color: #252119;
+            }
+            input:focus {
+                border-color: #bc3908;
+                outline: none;
+                box-shadow: 0 0 0 3px rgba(188, 57, 8, 0.12);
+            }
+            button {
+                background: #bc3908;
+                color: #fff;
+                border: none;
+                padding: 12px 18px;
+                border-radius: 9px;
+                font-size: 15px;
+                font-weight: 600;
+                cursor: pointer;
+                width: 100%;
+                transition: filter 0.15s;
+            }
+            button:hover {
+                filter: brightness(1.08);
+            }
+            button:active {
+                transform: translateY(1px);
+            }
+            .foot {
+                margin-top: 18px;
+                font-size: 12px;
+                color: #9a9389;
+                text-align: center;
+                font-family: ui-monospace, Consolas, monospace;
+            }
+        </style>
+    </head>
+    <body>
+        <form class="card" method="POST" action="/save">
+            <div class="brand">RLCD Setup</div>
+            <h1>Connect to WiFi</h1>
+            <p class="sub">
+                Enter your home WiFi credentials. The device will save them and
+                connect automatically.
+            </p>
+            <label for="ssid">SSID</label>
+            <input
+                id="ssid"
+                name="ssid"
+                required
+                autocomplete="off"
+                autocapitalize="off"
+                autocorrect="off"
+                spellcheck="false"
+                maxlength="32"
+            />
+            <label for="password">Password</label>
+            <input
+                id="password"
+                name="password"
+                type="password"
+                autocomplete="off"
+                maxlength="64"
+            />
+            <button type="submit">Save &amp; Connect</button>
+            <p class="foot">AP {AP} &middot; {MAC}</p>
+        </form>
+    </body>
+</html>

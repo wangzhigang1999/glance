@@ -21,8 +21,7 @@ pub struct CredsStore {
 
 impl CredsStore {
     pub fn new(partition: EspDefaultNvsPartition) -> Result<Self> {
-        let nvs = EspNvs::new(partition, NAMESPACE, true)
-            .context("open NVS namespace 'wifi'")?;
+        let nvs = EspNvs::new(partition, NAMESPACE, true).context("open NVS namespace 'wifi'")?;
         Ok(Self { nvs })
     }
 
@@ -53,7 +52,6 @@ impl CredsStore {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn clear(&self) -> Result<()> {
         let _ = self.nvs.remove(KEY_SSID)?;
         let _ = self.nvs.remove(KEY_PASSWORD)?;
