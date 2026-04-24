@@ -3,15 +3,15 @@
 //! 启动流程:
 //! 1. Display 初始化 + 启屏自检 + SHTC3 初始化
 //! 2. NVS 读 WiFi 凭据
-//!    - 有凭据:直接连 WiFi(3 次失败回退到 BLE 配网)
-//!    - 没凭据:启动 BLE 配网,阻塞等手机写入
-//! 3. 配网成功:deinit BLE 释放 ~30KB,启动 SNTP
+//!    - 有凭据:直接连 WiFi(3 次失败回退到 SoftAP 配网)
+//!    - 没凭据:开 SoftAP + HTTP 门户,阻塞等手机提交
+//! 3. 配网成功:停 AP,STA 连家里 WiFi,启动 SNTP
 //! 4. 主循环:5 s 读一次传感器,刷 UI
 //!
 //! 配网(首次/清 NVS 后):
-//! - 手机装 nRF Connect,扫到 "RLCD-Thermo",连接
-//! - 写 SSID 特征(524c4344-...-001),写 PASSWORD(...-002),写 COMMIT=0x01(...-003)
-//! - 订阅 STATUS(...-004)的 notify 观察连接过程
+//! - 手机连 "RLCD-Setup"(open,无密码)
+//! - 浏览器打开 http://192.168.4.1,填表单
+//! - 提交后设备试连,失败会重开 AP 让你再填
 
 mod config;
 mod display;
@@ -44,8 +44,7 @@ use crate::net::notifications::{self, NotifSummary};
 use crate::net::screen_http;
 use crate::config::{ConfigStore, RuntimeConfig, SharedConfig};
 use crate::net::{
-    format_local_date, format_local_hms, CredsStore, ProvStatus, Provisioner, Sntp, WifiCreds,
-    WifiManager,
+    format_local_date, format_local_hms, CredsStore, Provisioner, Sntp, WifiCreds, WifiManager,
 };
 use crate::ui::{AppState, Page};
 
@@ -55,10 +54,10 @@ const IDF_VERSION: &str = env!("ESP_IDF_VERSION");
 // 编译时注入的 GitHub PAT(仅首次 seed 进 NVS);运行时以 NVS 里的 gh_token 为准
 const GITHUB_TOKEN_COMPILE: Option<&'static str> = option_env!("GITHUB_TOKEN");
 
-/// 首次启动/NVS 空时,BLE 广播名
-const BLE_DEVICE_NAME: &str = "RLCD-Thermo";
+/// 首次启动/NVS 空时,SoftAP 的 SSID(open,无密码)
+const AP_SSID: &str = "RLCD-Setup";
 
-/// 保存的凭据连接失败多少次后回退到 BLE 配网(凭据可能过期)
+/// 保存的凭据连接失败多少次后回退到 SoftAP 配网(凭据可能过期)
 const WIFI_RETRY_BUDGET: u32 = 3;
 
 fn main() -> anyhow::Result<()> {
@@ -160,6 +159,10 @@ fn main() -> anyhow::Result<()> {
     state.flash_total = flash_stats.flash_total;
     state.app_part_size = flash_stats.app_part_size;
     state.app_used = flash_stats.app_used;
+    // mac 提前填给 state,配网页(render_prov)要显示
+    state.fw_version = fw_version;
+    state.idf_version = idf_version;
+    state.mac_suffix = mac.clone();
 
     // ---- NVS creds ----
     let creds_store = CredsStore::new(nvs.clone())?;
@@ -185,9 +188,6 @@ fn main() -> anyhow::Result<()> {
     state.wifi_ssid = creds.ssid.clone();
     state.ip_octets = Some(ip_info.ip.octets());
     state.prov_mode = false;
-    state.fw_version = fw_version;
-    state.idf_version = idf_version;
-    state.mac_suffix = mac.clone();
     let _ = ui::render(&mut display, &state, Page::Dashboard);
     display.flush()?;
     log::info!("WiFi fully up, ssid={}, ip={}", creds.ssid, ip_info.ip);
@@ -440,7 +440,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// 拿到可连的 WiFi 凭据并完成连接。
-/// 优先级:NVS → 失败回退 BLE 配网。成功时 BLE 会被 deinit(如果启动过)。
+/// 优先级:NVS → 失败回退 SoftAP + HTTP 门户。
 fn obtain_creds(
     display: &mut Display<'_>,
     state: &mut AppState,
@@ -460,50 +460,53 @@ fn obtain_creds(
         if try_connect_n(wifi, &creds, WIFI_RETRY_BUDGET) {
             return Ok(creds);
         }
-        log::warn!("stored creds failed {WIFI_RETRY_BUDGET}x, falling back to BLE prov");
+        log::warn!("stored creds failed {WIFI_RETRY_BUDGET}x, falling back to SoftAP prov");
+        let _ = wifi.force_stop();
     }
 
-    // 尝试 2:BLE 配网,阻塞到拿到一组能连上的凭据
-    state.prov_mode = true;
-    state.prov_hint.clear();
-    let _ = state.prov_hint.push_str(BLE_DEVICE_NAME);
-    let _ = ui::render(display, state, Page::Dashboard);
-    let _ = display.flush();
-
-    let prov = Provisioner::start(BLE_DEVICE_NAME)?;
-
+    // 尝试 2:SoftAP + HTTP 门户,阻塞到拿到一组能连上的凭据
     loop {
-        // 没超时(无限等),手机慢慢来
-        let creds = prov
-            .wait_for_creds(Duration::from_secs(3600))
-            .ok_or_else(|| anyhow::anyhow!("BLE prov idle > 1h, giving up"))?;
+        state.prov_mode = true;
+        state.prov_hint.clear();
+        let _ = state.prov_hint.push_str(AP_SSID);
+        state.prov_ap_ip = None;
+        let _ = ui::render(display, state, Page::Dashboard);
+        let _ = display.flush();
 
-        prov.publish_status(ProvStatus::Connecting);
+        wifi.start_ap(AP_SSID)?;
+        // AP 启好再读 IP:DHCP server 把 192.168.x.1 赋给 ap netif 后才能查到
+        state.prov_ap_ip = wifi.ap_ip().map(|ip| ip.octets());
+        let _ = ui::render(display, state, Page::Dashboard);
+        let _ = display.flush();
+        let prov = Provisioner::start(AP_SSID, &state.mac_suffix)?;
+
+        // 无限等(手机慢慢来);空表单/非法字符会被 wait_for_creds 滤掉返回 None,继续等
+        let creds = loop {
+            match prov.wait_for_creds(Duration::from_secs(3600)) {
+                Some(c) => break c,
+                None => continue,
+            }
+        };
+
+        // 拆 AP + HTTP 才能切 STA,prov 也一并 drop
+        drop(prov);
+        let _ = wifi.force_stop();
+
         state.prov_hint.clear();
         let _ = write_owned(&mut state.prov_hint, "connecting ", &creds.ssid);
         let _ = ui::render(display, state, Page::Dashboard);
         let _ = display.flush();
 
         if try_connect_n(wifi, &creds, WIFI_RETRY_BUDGET) {
-            prov.publish_status(ProvStatus::Connected);
-            // 先保存 NVS(下次启动就不走 BLE 了),再 deinit BLE
             if let Err(e) = store.save(&creds) {
                 log::error!("save creds to NVS failed: {e}");
-            }
-            // 给 STATUS notify 点时间发出去再关 BLE
-            sleep(Duration::from_millis(500));
-            if let Err(e) = Provisioner::shutdown() {
-                log::warn!("BLE shutdown returned: {e}");
             }
             return Ok(creds);
         }
 
-        log::warn!("connect failed with provisioned creds, wait for new");
-        prov.publish_status(ProvStatus::Failed);
-        state.prov_hint.clear();
-        let _ = state.prov_hint.push_str("bad creds, retry");
-        let _ = ui::render(display, state, Page::Dashboard);
-        let _ = display.flush();
+        log::warn!("connect failed with submitted creds, restart AP for retry");
+        let _ = wifi.force_stop();
+        // 循环顶端会重开 AP 和 Provisioner
     }
 }
 

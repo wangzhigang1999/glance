@@ -73,6 +73,7 @@ pub struct AppState {
     // 配网
     pub prov_mode: bool,
     pub prov_hint: heapless::String<32>,
+    pub prov_ap_ip: Option<[u8; 4]>,
 
     // 传感器历史(5s/样,120样=10min)
     pub temp_hist: heapless::HistoryBuffer<f32, 120>,
@@ -138,6 +139,7 @@ impl Default for AppState {
             battery: None,
             prov_mode: false,
             prov_hint: heapless::String::new(),
+            prov_ap_ip: None,
             temp_hist: heapless::HistoryBuffer::new(),
             rh_hist: heapless::HistoryBuffer::new(),
             contrib: [0u8; 371],
@@ -1166,7 +1168,7 @@ fn draw_day_cell(
 }
 
 // ============================================================================
-// BLE 配网模式(独立于主仪表盘)
+// SoftAP 配网模式(独立于主仪表盘)
 // ============================================================================
 fn render_prov(
     target: &mut Display<'_>,
@@ -1181,35 +1183,26 @@ fn render_prov(
         .baseline(Baseline::Middle)
         .build();
 
-    Text::with_text_style("BLE SETUP", Point::new(cx, 50), *big, style).draw(target)?;
-    Text::with_text_style(
-        "Connect to BLE device:",
-        Point::new(cx, 110),
-        *header,
-        style,
-    )
-    .draw(target)?;
-    Text::with_text_style(&state.prov_hint, Point::new(cx, 148), *big, style).draw(target)?;
-    Text::with_text_style(
-        "Open nRF Connect, scan, connect,",
-        Point::new(cx, 210),
-        *tiny,
-        style,
-    )
-    .draw(target)?;
-    Text::with_text_style(
-        "write SSID, PASSWORD, COMMIT=01.",
-        Point::new(cx, 232),
-        *tiny,
-        style,
-    )
-    .draw(target)?;
-    Text::with_text_style(
-        "Service 524c4344-c001-4c7c-9b4f-00..",
-        Point::new(cx, 268),
-        *tiny,
-        style,
-    )
-    .draw(target)?;
+    Text::with_text_style("WIFI SETUP", Point::new(cx, 46), *big, style).draw(target)?;
+    Text::with_text_style("Join WiFi network:", Point::new(cx, 98), *header, style)
+        .draw(target)?;
+    Text::with_text_style(&state.prov_hint, Point::new(cx, 136), *big, style).draw(target)?;
+    Text::with_text_style("Then open in browser:", Point::new(cx, 188), *header, style)
+        .draw(target)?;
+
+    let mut url: heapless::String<32> = heapless::String::new();
+    let _ = url.push_str("http://");
+    if let Some([a, b, c, d]) = state.prov_ap_ip {
+        use core::fmt::Write;
+        let _ = write!(url, "{a}.{b}.{c}.{d}");
+    } else {
+        let _ = url.push_str("192.168.4.1");
+    }
+    Text::with_text_style(&url, Point::new(cx, 226), *big, style).draw(target)?;
+
+    let mut bottom: heapless::String<32> = heapless::String::new();
+    let _ = bottom.push_str("device ");
+    let _ = bottom.push_str(&state.mac_suffix);
+    Text::with_text_style(&bottom, Point::new(cx, 276), *tiny, style).draw(target)?;
     Ok(())
 }

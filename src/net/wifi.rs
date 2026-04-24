@@ -14,6 +14,7 @@ use esp_idf_svc::{
     hal::modem::Modem,
     ipv4::IpInfo,
     nvs::EspDefaultNvsPartition,
+    sys,
     wifi::{AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi},
 };
 #[derive(Debug, Clone)]
@@ -104,5 +105,50 @@ impl WifiManager {
         let _ = self.wifi.disconnect();
         let _ = self.wifi.stop();
         Ok(())
+    }
+
+    /// 开 AccessPoint(open, 无密码)供手机连上来配网。
+    /// 默认 IP 由 esp-netif 分配(通常 192.168.71.1),DHCP server 自动起。
+    ///
+    /// 用 AP-only 模式 + 最小化 wifi_ap_config_t —— esp-idf-svc 的
+    /// AccessPointConfiguration 填的冗余字段在 IDF 5.5 会被 esp_wifi_set_config 拒 INVALID_ARG。
+    pub fn start_ap(&mut self, ssid: &str) -> Result<()> {
+        use sys::{
+            esp, esp_wifi_set_config, esp_wifi_set_mode, wifi_config_t,
+            wifi_auth_mode_t_WIFI_AUTH_OPEN, wifi_interface_t_WIFI_IF_AP,
+            wifi_mode_t_WIFI_MODE_AP,
+        };
+
+        log::info!("start_ap: ssid='{ssid}' (open, AP-only)");
+        if ssid.len() > 32 {
+            return Err(anyhow!("ap ssid > 32 bytes"));
+        }
+
+        unsafe {
+            esp!(esp_wifi_set_mode(wifi_mode_t_WIFI_MODE_AP))
+                .context("esp_wifi_set_mode(AP)")?;
+        }
+
+        let mut cfg: wifi_config_t = unsafe { core::mem::zeroed() };
+        unsafe {
+            let bytes = ssid.as_bytes();
+            cfg.ap.ssid[..bytes.len()].copy_from_slice(bytes);
+            cfg.ap.ssid_len = bytes.len() as u8;
+            cfg.ap.authmode = wifi_auth_mode_t_WIFI_AUTH_OPEN;
+            cfg.ap.max_connection = 1;
+            esp!(esp_wifi_set_config(wifi_interface_t_WIFI_IF_AP, &mut cfg))
+                .context("esp_wifi_set_config(AP)")?;
+        }
+
+        self.wifi.start().context("wifi.start (AP)")?;
+        // AP 模式不用 wait_netif_up:BlockingWifi.is_up() 要 driver.is_connected(),
+        // AP-only 下只要 driver 状态为 Started 就够了,start() 已保证这点。
+        log::info!("wifi AP '{ssid}' up");
+        Ok(())
+    }
+
+    /// 查 AP netif 当前 IP(用 192.168.x.1 这种作为 captive portal 入口地址显示)
+    pub fn ap_ip(&self) -> Option<core::net::Ipv4Addr> {
+        self.wifi.wifi().ap_netif().get_ip_info().ok().map(|i| i.ip)
     }
 }
