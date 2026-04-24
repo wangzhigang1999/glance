@@ -74,7 +74,7 @@ fn http_get(url: &str, token: Option<&str>) -> Result<String> {
 
     let auth = token.map(|t| format!("Bearer {}", t));
     let mut headers: Vec<(&str, &str)> = vec![
-        ("user-agent", "rlcd-thermo/0.1"),
+        ("user-agent", "clab/0.1"),
         ("accept", "application/vnd.github+json"),
         ("x-github-api-version", "2022-11-28"),
     ];

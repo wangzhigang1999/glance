@@ -41,7 +41,7 @@ pub fn fetch(token: &str) -> Result<NotifSummary> {
 
     let auth = format!("Bearer {}", token);
     let headers = [
-        ("user-agent", "rlcd-thermo/0.1"),
+        ("user-agent", "clab/0.1"),
         ("accept", "application/vnd.github+json"),
         ("authorization", auth.as_str()),
         ("x-github-api-version", "2022-11-28"),

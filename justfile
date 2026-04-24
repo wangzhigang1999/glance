@@ -6,7 +6,7 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
 
 # ELF 输出位置(.cargo/config.toml 里的 target-dir 短路径规避)
 elf := "D:/t/rlcd/xtensa-esp32s3-espidf/release/firmware"
-port := "COM3"
+port := "COM4"
 
 # 默认:编译 + 烧 + 监视,一把流
 default: flash-monitor

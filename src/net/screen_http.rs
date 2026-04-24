@@ -518,7 +518,7 @@ fn github_whoami(token: &str) -> Result<String> {
 
     let auth = format!("Bearer {}", token);
     let headers = [
-        ("user-agent", "rlcd-thermo/0.1"),
+        ("user-agent", "clab/0.1"),
         ("accept", "application/vnd.github+json"),
         ("x-github-api-version", "2022-11-28"),
         ("authorization", auth.as_str()),

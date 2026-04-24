@@ -1,6 +1,6 @@
 //! SoftAP + HTTP 门户配网
 //!
-//! 开 open AP(默认 "RLCD-Setup"),手机连上后访问 http://192.168.4.1
+//! 开 open AP(默认 "CuriosityLab-Setup"),手机连上后访问 http://192.168.4.1
 //! 看到表单,填 SSID/密码 → POST /save → 主线程拿回凭据去连 WiFi。
 //!
 //! 设计:

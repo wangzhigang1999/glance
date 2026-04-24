@@ -9,7 +9,7 @@
 //! 4. 主循环:5 s 读一次传感器,刷 UI
 //!
 //! 配网(首次/清 NVS 后):
-//! - 手机连 "RLCD-Setup"(open,无密码)
+//! - 手机连 "CuriosityLab-Setup"(open,无密码)
 //! - 浏览器打开 http://192.168.4.1,填表单
 //! - 提交后设备试连,失败会重开 AP 让你再填
 
@@ -65,7 +65,7 @@ const IDF_VERSION: &str = env!("ESP_IDF_VERSION");
 const GITHUB_TOKEN_COMPILE: Option<&'static str> = option_env!("GITHUB_TOKEN");
 
 /// 首次启动/NVS 空时,SoftAP 的 SSID(open,无密码)
-const AP_SSID: &str = "RLCD-Setup";
+const AP_SSID: &str = "CuriosityLab-Setup";
 
 /// 保存的凭据连接失败多少次后回退到 SoftAP 配网(凭据可能过期)
 const WIFI_RETRY_BUDGET: u32 = 3;
@@ -74,7 +74,7 @@ fn main() -> anyhow::Result<()> {
     link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
 
-    log::info!("=== ESP32-S3-RLCD-4.2 温湿度计 ===");
+    log::info!("=== ESP32-S3-RLCD-4.2 ===");
 
     let peripherals = Peripherals::take()?;
     let sys_loop = EspSystemEventLoop::take()?;

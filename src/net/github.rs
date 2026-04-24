@@ -46,7 +46,7 @@ pub fn fetch(user: &str, token: &str) -> Result<ContribData> {
     let auth = format!("Bearer {}", token);
     let clen = body.len().to_string();
     let headers = [
-        ("user-agent", "rlcd-thermo/0.1"),
+        ("user-agent", "clab/0.1"),
         ("accept", "application/vnd.github+json"),
         ("content-type", "application/json"),
         ("authorization", auth.as_str()),
