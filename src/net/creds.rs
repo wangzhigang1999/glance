@@ -77,7 +77,6 @@ impl CredsStore {
     }
 
     /// 按 ssid 删除某个 slot(给 /settings 的移除按钮用)。
-    #[allow(dead_code)]
     pub fn remove(&self, ssid: &str) -> Result<()> {
         let mut list = self.load_all()?;
         let before = list.len();

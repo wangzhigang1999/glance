@@ -6,22 +6,38 @@
 //! `GET  /settings`    → 配置表单页(Tailwind)
 //! `GET  /api/config`  → 返回当前 RuntimeConfig(JSON;token 已脱敏)
 //! `POST /api/config`  → JSON body,更新字段,保存 NVS
+//! `GET  /api/wifi`    → 已保存 WiFi 凭据列表(只回 ssid,password 永不外泄)
+//! `POST /api/wifi`    → body `{ssid,password}`,追加/提升到 slot 0
+//! `POST /api/wifi/remove` → body `{ssid}`,按 ssid 删一个 slot
 //! `POST /api/wifi_forget` → 清 wifi NVS 凭据 + 重启(下次开机回 SoftAP 配网)
 //! `POST /api/reboot`  → esp_restart()
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
+};
 
 use anyhow::{anyhow, Result};
-use esp_idf_svc::http::client::{Configuration as HttpClientConfig, EspHttpConnection};
-use esp_idf_svc::http::server::{Configuration, EspHttpServer};
-use esp_idf_svc::http::Method;
-use esp_idf_svc::io::Write;
+use esp_idf_svc::{
+    http::{
+        client::{Configuration as HttpClientConfig, EspHttpConnection},
+        server::{Configuration, EspHttpServer},
+        Method,
+    },
+    io::Write,
+};
 
-use crate::config::{clamp, ConfigStore, SharedConfig};
-use crate::display::framebuffer::{pixel_index_mask, BUF_LEN, HEIGHT, WIDTH};
-use crate::net::creds::CredsStore;
+use crate::{
+    config::{clamp, ConfigStore, SharedConfig},
+    display::framebuffer::{pixel_index_mask, BUF_LEN, HEIGHT, WIDTH},
+    net::{
+        creds::{CredsStore, MAX_SLOTS as WIFI_MAX_SLOTS},
+        wifi::WifiCreds,
+    },
+};
 
 pub type SharedFb = Arc<Mutex<Vec<u8>>>;
 
@@ -97,11 +113,15 @@ pub fn start(
         },
     )?;
 
-    server.fn_handler("/settings", Method::Get, |req| -> Result<(), anyhow::Error> {
-        let mut resp = req.into_ok_response()?;
-        resp.write_all(SETTINGS_HTML.as_bytes())?;
-        Ok(())
-    })?;
+    server.fn_handler(
+        "/settings",
+        Method::Get,
+        |req| -> Result<(), anyhow::Error> {
+            let mut resp = req.into_ok_response()?;
+            resp.write_all(SETTINGS_HTML.as_bytes())?;
+            Ok(())
+        },
+    )?;
 
     let shared_for_handler = shared.clone();
     server.fn_handler(
@@ -292,9 +312,148 @@ pub fn start(
         },
     )?;
 
+    // ---- GET /api/wifi:列出已保存的凭据(只返回 ssid + 容量上限) ----
+    let creds_for_list = creds.clone();
+    server.fn_handler(
+        "/api/wifi",
+        Method::Get,
+        move |req| -> Result<(), anyhow::Error> {
+            #[derive(serde::Serialize)]
+            struct Slot<'a> {
+                ssid: &'a str,
+            }
+            #[derive(serde::Serialize)]
+            struct View<'a> {
+                slots: Vec<Slot<'a>>,
+                max: usize,
+            }
+            let list = creds_for_list.load_all().unwrap_or_default();
+            let slots: Vec<Slot> = list
+                .iter()
+                .map(|c| Slot {
+                    ssid: c.ssid.as_str(),
+                })
+                .collect();
+            let v = View {
+                slots,
+                max: WIFI_MAX_SLOTS,
+            };
+            let json = serde_json::to_string(&v).unwrap_or_else(|_| "{}".into());
+            let len = json.len().to_string();
+            let headers = [
+                ("content-type", "application/json; charset=utf-8"),
+                ("cache-control", "no-store"),
+                ("content-length", len.as_str()),
+            ];
+            let mut resp = req.into_response(200, Some("OK"), &headers)?;
+            resp.write_all(json.as_bytes())?;
+            Ok(())
+        },
+    )?;
 
-    // ---- POST /api/wifi_forget ----
-    // 清 NVS 里的 wifi 凭据 → 重启。下次开机 obtain_creds 找不到凭据,自动进 SoftAP 门户。
+    // ---- POST /api/wifi:追加一组凭据(命中 ssid 会提升到 slot 0) ----
+    let creds_for_add = creds.clone();
+    server.fn_handler(
+        "/api/wifi",
+        Method::Post,
+        move |mut req| -> Result<(), anyhow::Error> {
+            let mut buf = [0u8; 512];
+            let mut total = 0usize;
+            loop {
+                match req.read(&mut buf[total..]) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        total += n;
+                        if total >= buf.len() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let body = std::str::from_utf8(&buf[..total]).unwrap_or("");
+            #[derive(serde::Deserialize, Default)]
+            struct Add {
+                #[serde(default)]
+                ssid: String,
+                #[serde(default)]
+                password: String,
+            }
+            let a: Add = serde_json::from_str(body).unwrap_or_default();
+            if a.ssid.is_empty() {
+                let mut resp = req.into_status_response(400)?;
+                resp.write_all(b"{\"ok\":false,\"error\":\"ssid required\"}")?;
+                return Ok(());
+            }
+            match WifiCreds::new(&a.ssid, &a.password) {
+                Ok(c) => {
+                    if let Err(e) = creds_for_add.save(&c) {
+                        log::warn!("wifi add: save failed: {e:#}");
+                        let mut resp = req.into_status_response(500)?;
+                        resp.write_all(b"{\"ok\":false,\"error\":\"save failed\"}")?;
+                        return Ok(());
+                    }
+                    log::info!("wifi add: ssid={} promoted to slot 0", a.ssid);
+                    let mut resp = req.into_ok_response()?;
+                    resp.write_all(b"{\"ok\":true}")?;
+                    Ok(())
+                }
+                Err(e) => {
+                    log::warn!("wifi add: invalid: {e:#}");
+                    let mut resp = req.into_status_response(400)?;
+                    resp.write_all(b"{\"ok\":false,\"error\":\"ssid/password length exceeds 32/64\"}")?;
+                    Ok(())
+                }
+            }
+        },
+    )?;
+
+    // ---- POST /api/wifi/remove:按 ssid 删除 slot ----
+    let creds_for_rm = creds.clone();
+    server.fn_handler(
+        "/api/wifi/remove",
+        Method::Post,
+        move |mut req| -> Result<(), anyhow::Error> {
+            let mut buf = [0u8; 256];
+            let mut total = 0usize;
+            loop {
+                match req.read(&mut buf[total..]) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        total += n;
+                        if total >= buf.len() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let body = std::str::from_utf8(&buf[..total]).unwrap_or("");
+            #[derive(serde::Deserialize, Default)]
+            struct Rm {
+                #[serde(default)]
+                ssid: String,
+            }
+            let r: Rm = serde_json::from_str(body).unwrap_or_default();
+            if r.ssid.is_empty() {
+                let mut resp = req.into_status_response(400)?;
+                resp.write_all(b"{\"ok\":false,\"error\":\"ssid required\"}")?;
+                return Ok(());
+            }
+            if let Err(e) = creds_for_rm.remove(&r.ssid) {
+                log::warn!("wifi remove ssid={}: {e:#}", r.ssid);
+                let mut resp = req.into_status_response(500)?;
+                resp.write_all(b"{\"ok\":false,\"error\":\"remove failed\"}")?;
+                return Ok(());
+            }
+            log::info!("wifi remove: ssid={}", r.ssid);
+            let mut resp = req.into_ok_response()?;
+            resp.write_all(b"{\"ok\":true}")?;
+            Ok(())
+        },
+    )?;
+
+    // ---- POST /api/wifi_forget:清全部 slot + 重启,下次开机回 SoftAP 门户 ----
     let creds_for_forget = creds.clone();
     server.fn_handler(
         "/api/wifi_forget",
@@ -339,7 +498,7 @@ pub fn start(
     )?;
 
     log::info!(
-        "Screen HTTP server up on http://<ip>/  (/, /settings, /screen.bmp, /next, /api/config, /api/wifi_forget, /api/reboot)"
+        "Screen HTTP server up on http://<ip>/  (/, /settings, /screen.bmp, /next, /api/config, /api/wifi{{,/remove}}, /api/wifi_forget, /api/reboot)"
     );
     Ok(server)
 }
@@ -517,7 +676,7 @@ fn encode_bmp(fb: &[u8]) -> Vec<u8> {
     const W: usize = WIDTH as usize;
     const H: usize = HEIGHT as usize;
     const ROW: usize = ((W + 31) / 32) * 4; // 52
-    const PIXEL_DATA_LEN: usize = ROW * H;  // 15600
+    const PIXEL_DATA_LEN: usize = ROW * H; // 15600
 
     const FILE_HDR: usize = 14;
     const DIB_HDR: usize = 40;
@@ -530,7 +689,7 @@ fn encode_bmp(fb: &[u8]) -> Vec<u8> {
     // ---- BITMAPFILEHEADER ----
     out.extend_from_slice(b"BM");
     out.extend_from_slice(&(FILE_SIZE as u32).to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());           // reserved
+    out.extend_from_slice(&0u32.to_le_bytes()); // reserved
     out.extend_from_slice(&(OFFSET as u32).to_le_bytes());
 
     // ---- BITMAPINFOHEADER ----
@@ -538,14 +697,14 @@ fn encode_bmp(fb: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&(W as i32).to_le_bytes());
     // 负 height => top-down
     out.extend_from_slice(&(-(H as i32)).to_le_bytes());
-    out.extend_from_slice(&1u16.to_le_bytes());           // planes
-    out.extend_from_slice(&1u16.to_le_bytes());           // bpp
-    out.extend_from_slice(&0u32.to_le_bytes());           // BI_RGB
+    out.extend_from_slice(&1u16.to_le_bytes()); // planes
+    out.extend_from_slice(&1u16.to_le_bytes()); // bpp
+    out.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
     out.extend_from_slice(&(PIXEL_DATA_LEN as u32).to_le_bytes());
-    out.extend_from_slice(&2835u32.to_le_bytes());        // x ppm
-    out.extend_from_slice(&2835u32.to_le_bytes());        // y ppm
-    out.extend_from_slice(&2u32.to_le_bytes());           // palette entries
-    out.extend_from_slice(&0u32.to_le_bytes());           // important
+    out.extend_from_slice(&2835u32.to_le_bytes()); // x ppm
+    out.extend_from_slice(&2835u32.to_le_bytes()); // y ppm
+    out.extend_from_slice(&2u32.to_le_bytes()); // palette entries
+    out.extend_from_slice(&0u32.to_le_bytes()); // important
 
     // ---- palette: [0]=white, [1]=black ----
     out.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0x00]);

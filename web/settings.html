@@ -156,6 +156,29 @@
             </section>
 
             <section class="card">
+                <h2><i class="fa-solid fa-wifi"></i>WiFi credentials</h2>
+                <ul id="wifi_list" class="space-y-1.5 mb-4"></ul>
+                <div class="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
+                    <div class="sm:col-span-5">
+                        <label class="label" for="wifi_ssid">SSID</label>
+                        <input class="input" id="wifi_ssid" maxlength="32" placeholder="Home-5G" autocomplete="off" />
+                    </div>
+                    <div class="sm:col-span-5">
+                        <label class="label" for="wifi_pwd">Password</label>
+                        <input class="input" id="wifi_pwd" type="password" maxlength="64" placeholder="(leave empty for open)" autocomplete="off" />
+                    </div>
+                    <div class="sm:col-span-2">
+                        <button class="btn-primary w-full" id="wifi_add" type="button">
+                            <i class="fa-solid fa-plus"></i>Add
+                        </button>
+                    </div>
+                </div>
+                <div class="hint mt-3">
+                    Slot 0 = last-connected. On boot, device scans APs and picks the strongest matching saved cred. <span id="wifi_counter"></span>
+                </div>
+            </section>
+
+            <section class="card">
                 <h2>
                     <i class="fa-solid fa-clock-rotate-left"></i>Fetcher
                     intervals (seconds)
@@ -488,12 +511,113 @@
                         btn.innerHTML = oldHtml;
                     }
                 }
+                function escHtml(s) {
+                    return String(s).replace(/[&<>"']/g, function (c) {
+                        return {
+                            "&": "&amp;",
+                            "<": "&lt;",
+                            ">": "&gt;",
+                            '"': "&quot;",
+                            "'": "&#39;",
+                        }[c];
+                    });
+                }
+                async function loadWifi() {
+                    try {
+                        const r = await fetch("/api/wifi", { cache: "no-store" });
+                        const j = await r.json();
+                        const ul = $("wifi_list");
+                        ul.innerHTML = "";
+                        const slots = j.slots || [];
+                        const max = j.max || 4;
+                        if (slots.length === 0) {
+                            ul.innerHTML =
+                                '<li class="text-[12px] font-mono text-ink/50 dark:text-ink-dark/50 italic">(no saved creds)</li>';
+                        } else {
+                            slots.forEach((s, i) => {
+                                const li = document.createElement("li");
+                                li.className =
+                                    "flex items-center gap-3 px-3 py-2 rounded-md border border-line dark:border-line-dark";
+                                li.innerHTML =
+                                    '<span class="text-[10px] font-mono text-ink/40 dark:text-ink-dark/40 shrink-0">slot ' +
+                                    i +
+                                    '</span><span class="flex-1 font-mono text-sm truncate">' +
+                                    escHtml(s.ssid) +
+                                    '</span><button class="btn-danger !px-2 !py-1 text-[11px] shrink-0" data-rm="' +
+                                    encodeURIComponent(s.ssid) +
+                                    '" type="button"><i class="fa-solid fa-trash"></i></button>';
+                                ul.appendChild(li);
+                            });
+                            ul.querySelectorAll("[data-rm]").forEach((btn) => {
+                                btn.onclick = async () => {
+                                    const ssid = decodeURIComponent(
+                                        btn.getAttribute("data-rm"),
+                                    );
+                                    if (
+                                        !confirm(
+                                            'Remove "' + ssid + '" from saved list?',
+                                        )
+                                    )
+                                        return;
+                                    try {
+                                        const r = await fetch("/api/wifi/remove", {
+                                            method: "POST",
+                                            headers: {
+                                                "content-type": "application/json",
+                                            },
+                                            body: JSON.stringify({ ssid }),
+                                        });
+                                        if (!r.ok) throw new Error("HTTP " + r.status);
+                                        showToast("removed: " + ssid, "ok");
+                                        loadWifi();
+                                    } catch (e) {
+                                        showToast("remove failed: " + e.message, "err");
+                                    }
+                                };
+                            });
+                        }
+                        $("wifi_counter").textContent =
+                            slots.length + " / " + max + " saved";
+                    } catch {
+                        showToast("wifi list failed", "err");
+                    }
+                }
+                async function addWifi() {
+                    const ssid = $("wifi_ssid").value.trim();
+                    const password = $("wifi_pwd").value;
+                    if (!ssid) {
+                        showToast("ssid required", "err");
+                        return;
+                    }
+                    const btn = $("wifi_add");
+                    btn.disabled = true;
+                    try {
+                        const r = await fetch("/api/wifi", {
+                            method: "POST",
+                            headers: { "content-type": "application/json" },
+                            body: JSON.stringify({ ssid, password }),
+                        });
+                        const j = await r.json();
+                        if (!r.ok || !j.ok)
+                            throw new Error(j.error || "HTTP " + r.status);
+                        $("wifi_ssid").value = "";
+                        $("wifi_pwd").value = "";
+                        showToast("added: " + ssid, "ok");
+                        loadWifi();
+                    } catch (e) {
+                        showToast("add failed: " + e.message, "err");
+                    } finally {
+                        btn.disabled = false;
+                    }
+                }
                 $("save").onclick = save;
                 $("reload").onclick = load;
                 $("reboot").onclick = reboot;
                 $("forget").onclick = forget;
                 $("discover").onclick = discover;
+                $("wifi_add").onclick = addWifi;
                 load();
+                loadWifi();
             })();
         </script>
     </body>
