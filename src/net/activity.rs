@@ -3,13 +3,17 @@
 //! `/users/{user}/events` 带 token 可见 private 事件,按时间倒序;
 //! 第一条就是最新。不同 type 从 payload 不同子对象取动作/目标。
 
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    thread,
+    time::Duration,
+};
 
 use anyhow::{anyhow, Context, Result};
-use esp_idf_svc::http::client::{Configuration, EspHttpConnection};
-use esp_idf_svc::http::Method;
+use esp_idf_svc::http::{
+    client::{Configuration, EspHttpConnection},
+    Method,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct Activity {
@@ -30,7 +34,11 @@ pub fn fetch(user: &str, token: &str) -> Result<Activity> {
     let body = http_get(&ev_url, Some(token))?;
     if let Some((line, detail, epoch)) = parse_last_event(&body) {
         act.last_line = Some(line);
-        act.last_detail = if detail.is_empty() { None } else { Some(detail) };
+        act.last_detail = if detail.is_empty() {
+            None
+        } else {
+            Some(detail)
+        };
         act.last_at_epoch = epoch;
     }
 
@@ -187,13 +195,7 @@ fn parse_last_event(body: &str) -> Option<(String, String, u64)> {
                         .as_deref()
                         .and_then(|r| r.strip_prefix("refs/heads/"))
                         .unwrap_or_else(|| pl.git_ref.as_deref().unwrap_or(""));
-                    let head: String = pl
-                        .head
-                        .as_deref()
-                        .unwrap_or("")
-                        .chars()
-                        .take(7)
-                        .collect();
+                    let head: String = pl.head.as_deref().unwrap_or("").chars().take(7).collect();
                     if !branch.is_empty() && !head.is_empty() {
                         format!("{} @ {}", branch, head)
                     } else if !head.is_empty() {
@@ -215,17 +217,29 @@ fn parse_last_event(body: &str) -> Option<(String, String, u64)> {
         }
         "PullRequestReviewEvent" => {
             let num = pl.pull_request.map(|p| p.number).unwrap_or(0);
-            let detail = pl.review.and_then(|r| r.body).map(|s| first_line(&s)).unwrap_or_default();
+            let detail = pl
+                .review
+                .and_then(|r| r.body)
+                .map(|s| first_line(&s))
+                .unwrap_or_default();
             (format!("reviewed {}#{}", repo, num), detail)
         }
         "PullRequestReviewCommentEvent" => {
             let num = pl.pull_request.map(|p| p.number).unwrap_or(0);
-            let detail = pl.comment.and_then(|c| c.body).map(|s| first_line(&s)).unwrap_or_default();
+            let detail = pl
+                .comment
+                .and_then(|c| c.body)
+                .map(|s| first_line(&s))
+                .unwrap_or_default();
             (format!("review comment on {}#{}", repo, num), detail)
         }
         "IssueCommentEvent" => {
             let num = pl.issue.as_ref().map(|i| i.number).unwrap_or(0);
-            let detail = pl.comment.and_then(|c| c.body).map(|s| first_line(&s)).unwrap_or_default();
+            let detail = pl
+                .comment
+                .and_then(|c| c.body)
+                .map(|s| first_line(&s))
+                .unwrap_or_default();
             (format!("commented on {}#{}", repo, num), detail)
         }
         "IssuesEvent" => {
@@ -235,7 +249,10 @@ fn parse_last_event(body: &str) -> Option<(String, String, u64)> {
                 title: None,
             });
             let detail = issue.title.unwrap_or_default();
-            (format!("{} issue {}#{}", action, repo, issue.number), detail)
+            (
+                format!("{} issue {}#{}", action, repo, issue.number),
+                detail,
+            )
         }
         "CreateEvent" => {
             let rt = pl.ref_type.unwrap_or_default();

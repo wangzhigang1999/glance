@@ -4,14 +4,20 @@
 //! 代理从国内网络走国际线路被墙/丢包(原先 `ESP_ERR_HTTP_CONNECT` 就是此)。
 //! api.github.com 在国内有 CDN 可达,复用已有 GITHUB_TOKEN。
 
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    thread,
+    time::Duration,
+};
 
 use anyhow::{anyhow, Context, Result};
-use esp_idf_svc::http::client::{Configuration, EspHttpConnection};
-use esp_idf_svc::http::Method;
-use esp_idf_svc::io::Write;
+use esp_idf_svc::{
+    http::{
+        client::{Configuration, EspHttpConnection},
+        Method,
+    },
+    io::Write,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct ContribData {
@@ -129,10 +135,7 @@ fn parse_response(body: &[u8]) -> Result<ContribData> {
             });
         return Err(anyhow!("GitHub: {}", msg));
     }
-    let user = resp
-        .data
-        .and_then(|d| d.user)
-        .context("user not found")?;
+    let user = resp.data.and_then(|d| d.user).context("user not found")?;
     let cal = user.cc.cal;
 
     let mut counts: Vec<u32> = Vec::with_capacity(400);

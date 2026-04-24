@@ -33,5 +33,4 @@ impl Sntp {
         log::info!("SNTP started with {:?}", conf.servers);
         Ok(Self { _inner: inner })
     }
-
 }

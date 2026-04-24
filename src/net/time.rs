@@ -15,7 +15,11 @@ const SYNCED_THRESHOLD: i64 = 1_577_836_800;
 /// 当前 Unix 秒(未同步返回 None)
 pub fn unix_secs() -> Option<i64> {
     let unix = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
-    if unix < SYNCED_THRESHOLD { None } else { Some(unix) }
+    if unix < SYNCED_THRESHOLD {
+        None
+    } else {
+        Some(unix)
+    }
 }
 
 /// HH:MM:SS(本地时区,未同步返回 None)
