@@ -479,12 +479,27 @@ fn obtain_creds(
     store: &CredsStore,
     stored: Vec<WifiCreds>,
 ) -> anyhow::Result<WifiCreds> {
-    // 尝试 1:NVS 里每个 slot 依序试连,第一个连上就走
-    for (i, creds) in stored.iter().enumerate() {
+    // 多凭据场景先扫一次,按 RSSI 强弱筛出"此时能连上"的候选;
+    // 单凭据跳过扫描避免 2s 无意义开销。
+    let ordered: Vec<WifiCreds> = match stored.len() {
+        0 => Vec::new(),
+        1 => stored,
+        _ => match wifi.scan_and_sort(&stored) {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("scan failed, fallback to slot order: {e:#}");
+                stored
+            }
+        },
+    };
+    let had_stored = !ordered.is_empty();
+
+    // 尝试 1:按排序后的顺序逐个试连,第一个连上就走
+    for (i, creds) in ordered.iter().enumerate() {
         log::info!(
-            "[slot {}/{}] trying stored creds ssid={}",
+            "[cand {}/{}] trying stored creds ssid={}",
             i + 1,
-            stored.len(),
+            ordered.len(),
             creds.ssid
         );
         state.prov_mode = false;
@@ -506,8 +521,11 @@ fn obtain_creds(
         );
         let _ = wifi.force_stop();
     }
-    if !stored.is_empty() {
-        log::warn!("all {} stored creds failed, falling back to SoftAP prov", stored.len());
+    if had_stored {
+        log::warn!(
+            "all {} stored cred(s) failed, falling back to SoftAP prov",
+            ordered.len()
+        );
     }
 
     // 尝试 2:SoftAP + HTTP 门户,阻塞到拿到一组能连上的凭据

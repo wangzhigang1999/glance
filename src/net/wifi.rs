@@ -87,6 +87,41 @@ impl WifiManager {
         Ok(ip_info)
     }
 
+    /// 扫描周围 AP,把 `stored` 按扫到的 RSSI 强弱排序(扫不到的放尾部兜底)。
+    ///
+    /// 适用场景:设备离开了"上次连的 AP"所在网络,需要在多个已保存凭据里
+    /// 选一个"此时此地能连上"的。扫描耗时约 1-2s,1-slot 情况下调用方应跳过。
+    pub fn scan_and_sort(&mut self, stored: &[WifiCreds]) -> Result<Vec<WifiCreds>> {
+        // 给个空 STA 配置让 start() 能成功(scan 需要 wifi 在 STARTED 态)
+        let cfg = Configuration::Client(ClientConfiguration::default());
+        self.wifi.set_configuration(&cfg).context("set_configuration (scan)")?;
+        self.wifi.start().context("wifi.start (scan)")?;
+        let results = self.wifi.scan().context("wifi.scan")?;
+        let _ = self.wifi.stop();
+
+        log::info!("scan: {} APs visible", results.len());
+
+        let mut seen: Vec<(WifiCreds, i8)> = Vec::new();
+        let mut unseen: Vec<WifiCreds> = Vec::new();
+        for c in stored {
+            match results.iter().find(|ap| ap.ssid.as_str() == c.ssid.as_str()) {
+                Some(ap) => {
+                    log::info!("  candidate ssid={} rssi={}dBm", c.ssid, ap.signal_strength);
+                    seen.push((c.clone(), ap.signal_strength));
+                }
+                None => {
+                    log::info!("  candidate ssid={} (not in scan, fallback order)", c.ssid);
+                    unseen.push(c.clone());
+                }
+            }
+        }
+        // RSSI 越大越强(-40 > -80),倒序排 = 强的在前
+        seen.sort_by_key(|(_, rssi)| -(*rssi as i32));
+        let mut out: Vec<WifiCreds> = seen.into_iter().map(|(c, _)| c).collect();
+        out.append(&mut unseen);
+        Ok(out)
+    }
+
     pub fn is_connected(&self) -> bool {
         self.wifi.is_connected().unwrap_or(false)
     }
@@ -114,9 +149,8 @@ impl WifiManager {
     /// AccessPointConfiguration 填的冗余字段在 IDF 5.5 会被 esp_wifi_set_config 拒 INVALID_ARG。
     pub fn start_ap(&mut self, ssid: &str) -> Result<()> {
         use sys::{
-            esp, esp_wifi_set_config, esp_wifi_set_mode, wifi_config_t,
-            wifi_auth_mode_t_WIFI_AUTH_OPEN, wifi_interface_t_WIFI_IF_AP,
-            wifi_mode_t_WIFI_MODE_AP,
+            esp, esp_wifi_set_config, esp_wifi_set_mode, wifi_auth_mode_t_WIFI_AUTH_OPEN,
+            wifi_config_t, wifi_interface_t_WIFI_IF_AP, wifi_mode_t_WIFI_MODE_AP,
         };
 
         log::info!("start_ap: ssid='{ssid}' (open, AP-only)");
@@ -125,8 +159,7 @@ impl WifiManager {
         }
 
         unsafe {
-            esp!(esp_wifi_set_mode(wifi_mode_t_WIFI_MODE_AP))
-                .context("esp_wifi_set_mode(AP)")?;
+            esp!(esp_wifi_set_mode(wifi_mode_t_WIFI_MODE_AP)).context("esp_wifi_set_mode(AP)")?;
         }
 
         let mut cfg: wifi_config_t = unsafe { core::mem::zeroed() };
