@@ -19,34 +19,44 @@ mod hw;
 mod net;
 mod ui;
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
-use std::thread::sleep;
-use std::time::{Duration, Instant};
-
-use esp_idf_svc::eventloop::EspSystemEventLoop;
-use esp_idf_svc::hal::gpio::AnyOutputPin;
-use esp_idf_svc::hal::peripherals::Peripherals;
-use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use esp_idf_svc::sys::link_patches;
-
-use esp_idf_svc::hal::gpio::AnyIOPin;
-
-use crate::display::{Display, St7305};
-use crate::hw::battery::{Battery, PowerSource};
-use crate::hw::button::Button;
-use crate::hw::chip_temp::ChipTemp;
-use crate::hw::shtc3::Shtc3;
-use crate::hw::system::{mac_suffix, read_flash_stats, read_sys_stats};
-use crate::net::activity::{self, Activity};
-use crate::net::github::{self, ContribData};
-use crate::net::notifications::{self, NotifSummary};
-use crate::net::screen_http;
-use crate::config::{ConfigStore, RuntimeConfig, SharedConfig};
-use crate::net::{
-    format_local_date, format_local_hms, CredsStore, Provisioner, Sntp, WifiCreds, WifiManager,
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, RwLock,
+    },
+    thread::sleep,
+    time::{Duration, Instant},
 };
-use crate::ui::{AppState, Page};
+
+use esp_idf_svc::{
+    eventloop::EspSystemEventLoop,
+    hal::{
+        gpio::{AnyIOPin, AnyOutputPin},
+        peripherals::Peripherals,
+    },
+    nvs::EspDefaultNvsPartition,
+    sys::link_patches,
+};
+
+use crate::{
+    config::{ConfigStore, RuntimeConfig, SharedConfig},
+    display::{Display, St7305},
+    hw::{
+        battery::{Battery, PowerSource},
+        button::Button,
+        chip_temp::ChipTemp,
+        shtc3::Shtc3,
+        system::{mac_suffix, read_flash_stats, read_sys_stats},
+    },
+    net::{
+        activity::{self, Activity},
+        format_local_date, format_local_hms,
+        github::{self, ContribData},
+        notifications::{self, NotifSummary},
+        screen_http, CredsStore, Provisioner, Sntp, WifiCreds, WifiManager,
+    },
+    ui::{AppState, Page},
+};
 
 const FW_VERSION: &str = env!("CARGO_PKG_VERSION");
 // ESP_IDF_VERSION 从 .cargo/config.toml [env] 注入
@@ -83,7 +93,11 @@ fn main() -> anyhow::Result<()> {
     log::info!(
         "Config loaded: user={} token={} contrib={}/{} act={}/{} notif={} refresh={} tz={}",
         loaded.gh_user,
-        if loaded.gh_token.is_empty() { "(none)" } else { "(set)" },
+        if loaded.gh_token.is_empty() {
+            "(none)"
+        } else {
+            "(set)"
+        },
         loaded.contrib_ok_s,
         loaded.contrib_err_s,
         loaded.activity_ok_s,
@@ -164,9 +178,10 @@ fn main() -> anyhow::Result<()> {
     state.idf_version = idf_version;
     state.mac_suffix = mac.clone();
 
-    // ---- NVS creds ----
+    // ---- NVS creds(多 slot,最多 4 个) ----
     let creds_store = Arc::new(CredsStore::new(nvs.clone())?);
-    let stored_creds = creds_store.load()?;
+    let stored_creds = creds_store.load_all()?;
+    log::info!("loaded {} stored wifi cred(s)", stored_creds.len());
 
     // ---- WiFi manager ----
     let mut wifi = WifiManager::new(peripherals.modem, sys_loop, nvs)?;
@@ -280,7 +295,11 @@ fn main() -> anyhow::Result<()> {
             last_rotate = Instant::now();
             log::info!(
                 "Page switch (BOOT={} KEY={} HTTP={} AUTO={}) -> {:?}",
-                boot_edge, key_edge, http_next, auto_due, page
+                boot_edge,
+                key_edge,
+                http_next,
+                auto_due,
+                page
             );
             true
         } else {
@@ -452,28 +471,43 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// 拿到可连的 WiFi 凭据并完成连接。
-/// 优先级:NVS → 失败回退 SoftAP + HTTP 门户。
+/// 优先级:NVS 多 slot(按 slot 序逐个试)→ 全败回退 SoftAP + HTTP 门户。
 fn obtain_creds(
     display: &mut Display<'_>,
     state: &mut AppState,
     wifi: &mut WifiManager,
     store: &CredsStore,
-    stored: Option<WifiCreds>,
+    stored: Vec<WifiCreds>,
 ) -> anyhow::Result<WifiCreds> {
-    // 尝试 1:NVS 里的凭据
-    if let Some(creds) = stored {
-        log::info!("found stored creds for ssid={}, trying to connect", creds.ssid);
+    // 尝试 1:NVS 里每个 slot 依序试连,第一个连上就走
+    for (i, creds) in stored.iter().enumerate() {
+        log::info!(
+            "[slot {}/{}] trying stored creds ssid={}",
+            i + 1,
+            stored.len(),
+            creds.ssid
+        );
         state.prov_mode = false;
         state.prov_hint.clear();
         let _ = state.prov_hint.push_str("connecting...");
         let _ = ui::render(display, state, Page::Dashboard);
         let _ = display.flush();
 
-        if try_connect_n(wifi, &creds, WIFI_RETRY_BUDGET) {
-            return Ok(creds);
+        if try_connect_n(wifi, creds, WIFI_RETRY_BUDGET) {
+            // 成功:把这个 slot promote 到 slot 0(下次开机优先试)
+            if let Err(e) = store.save(creds) {
+                log::warn!("promote creds to slot 0 failed: {e:#}");
+            }
+            return Ok(creds.clone());
         }
-        log::warn!("stored creds failed {WIFI_RETRY_BUDGET}x, falling back to SoftAP prov");
+        log::warn!(
+            "stored ssid={} failed {WIFI_RETRY_BUDGET}x, trying next slot",
+            creds.ssid
+        );
         let _ = wifi.force_stop();
+    }
+    if !stored.is_empty() {
+        log::warn!("all {} stored creds failed, falling back to SoftAP prov", stored.len());
     }
 
     // 尝试 2:SoftAP + HTTP 门户,阻塞到拿到一组能连上的凭据
