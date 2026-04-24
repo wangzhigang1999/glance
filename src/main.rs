@@ -49,12 +49,9 @@ use crate::{
         system::{mac_suffix, read_flash_stats, read_sys_stats},
     },
     net::{
-        activity::Activity,
-        format_local_date, format_local_hms,
-        gh_worker,
-        github::ContribData,
-        notifications::NotifSummary,
-        screen_http, CredsStore, Provisioner, Sntp, WifiCreds, WifiManager,
+        activity::Activity, format_local_date, format_local_hms, gh_worker, github::ContribData,
+        notifications::NotifSummary, screen_http, CredsStore, Provisioner, Sntp, WifiCreds,
+        WifiManager,
     },
     ui::{AppState, Page},
 };

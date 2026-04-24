@@ -70,16 +70,21 @@
         <style>
             #s {
                 image-rendering: pixelated;
-                aspect-ratio: 4/3;
+                display: block;
+                aspect-ratio: 4 / 3;
                 height: auto;
-                width: auto;
-                max-height: calc(100dvh - 180px);
-                max-width: calc(100vw - 60px);
+                width: min(
+                    800px,
+                    calc(100vw - 60px),
+                    calc((100dvh - 180px) * 4 / 3)
+                );
             }
             @media (max-width: 640px) {
                 #s {
-                    max-height: calc(100dvh - 130px);
-                    max-width: calc(100vw - 24px);
+                    width: min(
+                        calc(100vw - 24px),
+                        calc((100dvh - 130px) * 4 / 3)
+                    );
                 }
             }
             .dot-pulse {
