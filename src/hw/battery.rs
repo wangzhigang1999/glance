@@ -11,14 +11,18 @@
 //! USB 供电但电池未插:ADC 读到 0 或漂动。阈值 < 2.5V 判 USB 模式。
 
 use anyhow::{Context, Result};
-use esp_idf_svc::hal::adc::attenuation::DB_12;
-use esp_idf_svc::hal::adc::oneshot::{
-    config::{AdcChannelConfig, Calibration},
-    AdcChannelDriver, AdcDriver,
+use esp_idf_svc::hal::{
+    adc::{
+        attenuation::DB_12,
+        oneshot::{
+            config::{AdcChannelConfig, Calibration},
+            AdcChannelDriver, AdcDriver,
+        },
+        ADC1, ADCCH3, ADCU1,
+    },
+    delay::FreeRtos,
+    gpio::Gpio4,
 };
-use esp_idf_svc::hal::adc::{ADC1, ADCCH3, ADCU1};
-use esp_idf_svc::hal::delay::FreeRtos;
-use esp_idf_svc::hal::gpio::Gpio4;
 
 /// 检测 USB 主机是否插着。原理:USB 主机每 1ms 下发一个 SOF 帧,ESP32-S3 的
 /// USB_SERIAL_JTAG 外设把最近收到的帧号记在 `JFIFO_ST.sof_frame_index`(11 bit),
@@ -69,8 +73,8 @@ impl Battery {
             calibration: Calibration::Curve,
             ..Default::default()
         };
-        let pin = AdcChannelDriver::new(&*adc, gpio4, &config)
-            .context("AdcChannelDriver::new(gpio4)")?;
+        let pin =
+            AdcChannelDriver::new(&*adc, gpio4, &config).context("AdcChannelDriver::new(gpio4)")?;
         Ok(Self { pin })
     }
 
@@ -91,8 +95,8 @@ impl Battery {
         if bat_mv < USB_THRESHOLD_MV {
             return Ok(PowerSource::Usb);
         }
-        let pct = (((bat_mv as f32 - VMIN_MV) / (VMAX_MV - VMIN_MV)) * 100.0)
-            .clamp(0.0, 100.0) as u8;
+        let pct =
+            (((bat_mv as f32 - VMIN_MV) / (VMAX_MV - VMIN_MV)) * 100.0).clamp(0.0, 100.0) as u8;
         Ok(PowerSource::Battery {
             mv: bat_mv,
             percent: pct,

@@ -35,10 +35,7 @@ pub struct FrameBuffer {
 impl FrameBuffer {
     pub fn new() -> Self {
         let v: Vec<u8> = vec![0xFF; BUF_LEN];
-        let boxed: Box<[u8; BUF_LEN]> = v
-            .into_boxed_slice()
-            .try_into()
-            .expect("BUF_LEN mismatch");
+        let boxed: Box<[u8; BUF_LEN]> = v.into_boxed_slice().try_into().expect("BUF_LEN mismatch");
         Self { buf: boxed }
     }
 
@@ -76,7 +73,7 @@ impl Default for FrameBuffer {
 pub fn pixel_index_mask(x: u16, y: u16) -> (usize, u8) {
     let inv_y = (HEIGHT - 1 - y) as usize;
     let byte_x = (x >> 1) as usize; // x / 2
-    let blk_y = inv_y >> 2;         // inv_y / 4
+    let blk_y = inv_y >> 2; // inv_y / 4
     let index = byte_x * H4 + blk_y;
     let local_x = (x & 1) as u8;
     let local_y = (inv_y & 3) as u8;

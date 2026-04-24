@@ -33,7 +33,10 @@ impl Button {
             Some(l) => l,
             None => {
                 self.idle_level = Some(high);
-                log::info!("Button idle level latched: {}", if high { "HIGH" } else { "LOW" });
+                log::info!(
+                    "Button idle level latched: {}",
+                    if high { "HIGH" } else { "LOW" }
+                );
                 return false;
             }
         };

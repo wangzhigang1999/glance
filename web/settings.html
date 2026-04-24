@@ -161,20 +161,39 @@
                 <div class="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
                     <div class="sm:col-span-5">
                         <label class="label" for="wifi_ssid">SSID</label>
-                        <input class="input" id="wifi_ssid" maxlength="32" placeholder="Home-5G" autocomplete="off" />
+                        <input
+                            class="input"
+                            id="wifi_ssid"
+                            maxlength="32"
+                            placeholder="Home-5G"
+                            autocomplete="off"
+                        />
                     </div>
                     <div class="sm:col-span-5">
                         <label class="label" for="wifi_pwd">Password</label>
-                        <input class="input" id="wifi_pwd" type="password" maxlength="64" placeholder="(leave empty for open)" autocomplete="off" />
+                        <input
+                            class="input"
+                            id="wifi_pwd"
+                            type="password"
+                            maxlength="64"
+                            placeholder="(leave empty for open)"
+                            autocomplete="off"
+                        />
                     </div>
                     <div class="sm:col-span-2">
-                        <button class="btn-primary w-full" id="wifi_add" type="button">
+                        <button
+                            class="btn-primary w-full"
+                            id="wifi_add"
+                            type="button"
+                        >
                             <i class="fa-solid fa-plus"></i>Add
                         </button>
                     </div>
                 </div>
                 <div class="hint mt-3">
-                    Slot 0 = last-connected. On boot, device scans APs and picks the strongest matching saved cred. <span id="wifi_counter"></span>
+                    Slot 0 = last-connected. On boot, device scans APs and picks
+                    the strongest matching saved cred.
+                    <span id="wifi_counter"></span>
                 </div>
             </section>
 
@@ -524,7 +543,9 @@
                 }
                 async function loadWifi() {
                     try {
-                        const r = await fetch("/api/wifi", { cache: "no-store" });
+                        const r = await fetch("/api/wifi", {
+                            cache: "no-store",
+                        });
                         const j = await r.json();
                         const ul = $("wifi_list");
                         ul.innerHTML = "";
@@ -555,23 +576,33 @@
                                     );
                                     if (
                                         !confirm(
-                                            'Remove "' + ssid + '" from saved list?',
+                                            'Remove "' +
+                                                ssid +
+                                                '" from saved list?',
                                         )
                                     )
                                         return;
                                     try {
-                                        const r = await fetch("/api/wifi/remove", {
-                                            method: "POST",
-                                            headers: {
-                                                "content-type": "application/json",
+                                        const r = await fetch(
+                                            "/api/wifi/remove",
+                                            {
+                                                method: "POST",
+                                                headers: {
+                                                    "content-type":
+                                                        "application/json",
+                                                },
+                                                body: JSON.stringify({ ssid }),
                                             },
-                                            body: JSON.stringify({ ssid }),
-                                        });
-                                        if (!r.ok) throw new Error("HTTP " + r.status);
+                                        );
+                                        if (!r.ok)
+                                            throw new Error("HTTP " + r.status);
                                         showToast("removed: " + ssid, "ok");
                                         loadWifi();
                                     } catch (e) {
-                                        showToast("remove failed: " + e.message, "err");
+                                        showToast(
+                                            "remove failed: " + e.message,
+                                            "err",
+                                        );
                                     }
                                 };
                             });

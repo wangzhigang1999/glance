@@ -153,8 +153,12 @@ impl ConfigStore {
         let _ = self.nvs.set_u32(K_SREFR, c.sensor_refresh_s)?;
         let _ = self.nvs.set_u8(K_ROT_ON, c.auto_rotate as u8)?;
         let _ = self.nvs.set_u32(K_ROT_SEC, c.auto_rotate_s)?;
-        let _ = self.nvs.set_i32(K_T_OFF_CC, (c.temp_off_c * 100.0) as i32)?;
-        let _ = self.nvs.set_i32(K_H_OFF_CC, (c.humid_off_pct * 100.0) as i32)?;
+        let _ = self
+            .nvs
+            .set_i32(K_T_OFF_CC, (c.temp_off_c * 100.0) as i32)?;
+        let _ = self
+            .nvs
+            .set_i32(K_H_OFF_CC, (c.humid_off_pct * 100.0) as i32)?;
         let _ = self.nvs.set_i32(K_TZ_OFF, c.tz_off_s)?;
         let _ = self.nvs.set_u32(K_SF_N, c.splash_flash)?;
         log::info!("config saved to NVS");

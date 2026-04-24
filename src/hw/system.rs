@@ -3,9 +3,9 @@
 //! 全部客观数据,每次 UI 刷新读一次(开销 μs 级,不心疼)。
 
 use esp_idf_svc::sys::{
-    esp_efuse_mac_get_default, esp_ota_get_running_partition, esp_partition_read,
-    esp_reset_reason, heap_caps_get_free_size, heap_caps_get_minimum_free_size,
-    heap_caps_get_total_size, uxTaskGetStackHighWaterMark, MALLOC_CAP_INTERNAL, MALLOC_CAP_SPIRAM,
+    esp_efuse_mac_get_default, esp_ota_get_running_partition, esp_partition_read, esp_reset_reason,
+    heap_caps_get_free_size, heap_caps_get_minimum_free_size, heap_caps_get_total_size,
+    uxTaskGetStackHighWaterMark, MALLOC_CAP_INTERNAL, MALLOC_CAP_SPIRAM,
 };
 
 #[derive(Debug, Clone, Copy)]

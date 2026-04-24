@@ -3,13 +3,17 @@
 //! API: GET https://api.github.com/notifications?all=false
 //! 响应: 数组,每条含 `subject.title` 和 `reason`。这里只取 title + count。
 
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    thread,
+    time::Duration,
+};
 
 use anyhow::{anyhow, Context, Result};
-use esp_idf_svc::http::client::{Configuration, EspHttpConnection};
-use esp_idf_svc::http::Method;
+use esp_idf_svc::http::{
+    client::{Configuration, EspHttpConnection},
+    Method,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct NotifItem {

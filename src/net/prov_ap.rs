@@ -9,14 +9,22 @@
 //! - HTTP handler 只做"解析 + 发送到 mpsc",不直接碰 WiFi/NVS(WiFi 切模式要主线程来)
 //! - 主线程 `wait_for_creds` 阻塞拿凭据,试连失败就重开 AP 等下一次
 
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Mutex;
-use std::time::Duration;
+use std::{
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        Mutex,
+    },
+    time::Duration,
+};
 
 use anyhow::Result;
-use esp_idf_svc::http::server::{Configuration, EspHttpServer};
-use esp_idf_svc::http::Method;
-use esp_idf_svc::io::Write;
+use esp_idf_svc::{
+    http::{
+        server::{Configuration, EspHttpServer},
+        Method,
+    },
+    io::Write,
+};
 
 use super::wifi::WifiCreds;
 
@@ -39,7 +47,12 @@ impl Provisioner {
         let form_html: &'static str = Box::leak(form_html.into_boxed_str());
 
         // `/` + captive-portal 探测 URL 全部返回表单
-        for path in ["/", "/hotspot-detect.html", "/library/test/success.html", "/generate_204"] {
+        for path in [
+            "/",
+            "/hotspot-detect.html",
+            "/library/test/success.html",
+            "/generate_204",
+        ] {
             server.fn_handler(path, Method::Get, move |req| -> Result<(), anyhow::Error> {
                 let mut resp = req.into_ok_response()?;
                 resp.write_all(form_html.as_bytes())?;
@@ -75,11 +88,7 @@ impl Provisioner {
                 }
                 let body = core::str::from_utf8(&buf[..total]).unwrap_or("");
                 let (ssid, password) = parse_form(body);
-                log::info!(
-                    "prov_ap: received ssid={} pwd_len={}",
-                    ssid,
-                    password.len()
-                );
+                log::info!("prov_ap: received ssid={} pwd_len={}", ssid, password.len());
 
                 let done_html = render_done(&ssid);
                 let len = done_html.len().to_string();
@@ -100,7 +109,10 @@ impl Provisioner {
         )?;
 
         log::info!("prov_ap: HTTP portal up on http://192.168.4.1");
-        Ok(Self { _server: server, rx })
+        Ok(Self {
+            _server: server,
+            rx,
+        })
     }
 
     /// 阻塞拿一组表单提交。解析 + 长度校验在这里,失败返回 None(调用方重试)。

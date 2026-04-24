@@ -343,12 +343,9 @@ fn draw_battery_icon(
         .draw(target)?;
     let fill_w = ((pct as u32) * 22 / 100).min(22);
     if fill_w > 0 {
-        Rectangle::new(
-            Point::new(origin.x + 2, origin.y + 2),
-            Size::new(fill_w, 9),
-        )
-        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-        .draw(target)?;
+        Rectangle::new(Point::new(origin.x + 2, origin.y + 2), Size::new(fill_w, 9))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(target)?;
     }
     Ok(())
 }
@@ -771,12 +768,9 @@ fn draw_sparkline(
 
     // 最后一个点画个小实心圆圈突出
     let last = to_point(n - 1, values[(n - 1) as usize]);
-    Rectangle::new(
-        Point::new(last.x - 1, last.y - 1),
-        Size::new(3, 3),
-    )
-    .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-    .draw(target)?;
+    Rectangle::new(Point::new(last.x - 1, last.y - 1), Size::new(3, 3))
+        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+        .draw(target)?;
 
     Ok(())
 }
@@ -884,7 +878,10 @@ fn render_github(
     }
 
     // 左侧行标 Mon-Sun
-    for (i, lbl) in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].iter().enumerate() {
+    for (i, lbl) in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        .iter()
+        .enumerate()
+    {
         let cy = grid_y + (i as i32) * row_step + CELL_H / 2;
         let style = embedded_graphics::text::TextStyleBuilder::new()
             .alignment(Alignment::Right)
@@ -911,7 +908,13 @@ fn render_github(
                 };
                 let x = grid_x + week * col_step;
                 let y = grid_y + day * row_step;
-                draw_day_cell(target, Point::new(x, y), CELL_W as u32, CELL_H as u32, level)?;
+                draw_day_cell(
+                    target,
+                    Point::new(x, y),
+                    CELL_W as u32,
+                    CELL_H as u32,
+                    level,
+                )?;
             }
         }
     } else {
@@ -935,8 +938,7 @@ fn render_github(
             // 画在右侧摘要区下方空位(y≈158 附近),覆盖"1 PR | ..."那行是可以的
             // 更安全:画在左侧热力图下方一行(grid_y + grid_h + 4 = 160)
             let err_y = grid_y + grid_h + 4;
-            Text::with_baseline(&msg, Point::new(14, err_y), *micro, Baseline::Top)
-                .draw(target)?;
+            Text::with_baseline(&msg, Point::new(14, err_y), *micro, Baseline::Top).draw(target)?;
         }
     }
 
@@ -1101,13 +1103,7 @@ fn render_github_unconfigured(
     } else {
         "missing: token"
     };
-    Text::with_text_style(
-        missing,
-        Point::new(cx, box_y + 72),
-        *tiny,
-        center_mid,
-    )
-    .draw(target)?;
+    Text::with_text_style(missing, Point::new(cx, box_y + 72), *tiny, center_mid).draw(target)?;
 
     // 给具体 URL,方便用户直接去配
     let mut url: heapless::String<40> = heapless::String::new();
@@ -1119,13 +1115,7 @@ fn render_github_unconfigured(
     } else {
         let _ = url.push_str("connect wifi, then open /settings");
     }
-    Text::with_text_style(
-        &url,
-        Point::new(cx, box_y + 108),
-        *micro,
-        center_mid,
-    )
-    .draw(target)?;
+    Text::with_text_style(&url, Point::new(cx, box_y + 108), *micro, center_mid).draw(target)?;
 
     // 底栏一行提示,和已配置态的 UNREAD 区域位置一致,保持视觉平衡
     Text::with_text_style(
@@ -1222,7 +1212,10 @@ fn draw_day_cell(
                 .draw(target)?;
             Rectangle::new(
                 Point::new(ox + inset_x, oy + inset_y),
-                Size::new((cw as i32 - 2 * inset_x).max(1) as u32, (ch as i32 - 2 * inset_y).max(1) as u32),
+                Size::new(
+                    (cw as i32 - 2 * inset_x).max(1) as u32,
+                    (ch as i32 - 2 * inset_y).max(1) as u32,
+                ),
             )
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
             .draw(target)?;
@@ -1235,7 +1228,10 @@ fn draw_day_cell(
             let pad = 2i32;
             Rectangle::new(
                 Point::new(ox + pad, oy + pad),
-                Size::new((cw as i32 - 2 * pad).max(1) as u32, (ch as i32 - 2 * pad).max(1) as u32),
+                Size::new(
+                    (cw as i32 - 2 * pad).max(1) as u32,
+                    (ch as i32 - 2 * pad).max(1) as u32,
+                ),
             )
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
             .draw(target)?;
@@ -1279,8 +1275,7 @@ fn render_prov(
         .build();
 
     Text::with_text_style("WIFI SETUP", Point::new(cx, 46), *big, style).draw(target)?;
-    Text::with_text_style("Join WiFi network:", Point::new(cx, 98), *header, style)
-        .draw(target)?;
+    Text::with_text_style("Join WiFi network:", Point::new(cx, 98), *header, style).draw(target)?;
     Text::with_text_style(&state.prov_hint, Point::new(cx, 136), *big, style).draw(target)?;
     Text::with_text_style("Then open in browser:", Point::new(cx, 188), *header, style)
         .draw(target)?;

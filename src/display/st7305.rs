@@ -13,12 +13,15 @@
 //! SPI 配置:10 MHz,mode 0,MSB first。
 
 use anyhow::{Context, Result};
-use esp_idf_svc::hal::delay::FreeRtos;
-use esp_idf_svc::hal::gpio::{InputPin, Output, OutputPin, PinDriver};
-use esp_idf_svc::hal::spi::config::Config as SpiConfig;
-use esp_idf_svc::hal::spi::config::DriverConfig as SpiDriverConfig;
-use esp_idf_svc::hal::spi::{Dma, SpiAnyPins, SpiDeviceDriver, SpiDriver};
-use esp_idf_svc::hal::units::Hertz;
+use esp_idf_svc::hal::{
+    delay::FreeRtos,
+    gpio::{InputPin, Output, OutputPin, PinDriver},
+    spi::{
+        config::{Config as SpiConfig, DriverConfig as SpiDriverConfig},
+        Dma, SpiAnyPins, SpiDeviceDriver, SpiDriver,
+    },
+    units::Hertz,
+};
 
 struct InitStep {
     cmd: u8,
@@ -28,33 +31,141 @@ struct InitStep {
 
 /// 完整 init 序列(翻译自 Waveshare `display_bsp.cpp`)
 const INIT_SEQUENCE: &[InitStep] = &[
-    InitStep { cmd: 0xD6, data: &[0x17, 0x02], delay_ms: 0 },
-    InitStep { cmd: 0xD1, data: &[0x01], delay_ms: 0 },
-    InitStep { cmd: 0xC0, data: &[0x11, 0x04], delay_ms: 0 },
-    InitStep { cmd: 0xC1, data: &[0x69, 0x69, 0x69, 0x69], delay_ms: 0 },
-    InitStep { cmd: 0xC2, data: &[0x19, 0x19, 0x19, 0x19], delay_ms: 0 },
-    InitStep { cmd: 0xC4, data: &[0x4B, 0x4B, 0x4B, 0x4B], delay_ms: 0 },
-    InitStep { cmd: 0xC5, data: &[0x19, 0x19, 0x19, 0x19], delay_ms: 0 },
-    InitStep { cmd: 0xD8, data: &[0x80, 0xE9], delay_ms: 0 },
-    InitStep { cmd: 0xB2, data: &[0x02], delay_ms: 0 },
-    InitStep { cmd: 0xB3, data: &[0xE5, 0xF6, 0x05, 0x46, 0x77, 0x77, 0x77, 0x77, 0x76, 0x45], delay_ms: 0 },
-    InitStep { cmd: 0xB4, data: &[0x05, 0x46, 0x77, 0x77, 0x77, 0x77, 0x76, 0x45], delay_ms: 0 },
-    InitStep { cmd: 0x62, data: &[0x32, 0x03, 0x1F], delay_ms: 0 },
-    InitStep { cmd: 0xB7, data: &[0x13], delay_ms: 0 },
-    InitStep { cmd: 0xB0, data: &[0x64], delay_ms: 0 },
-    InitStep { cmd: 0x11, data: &[], delay_ms: 200 },
-    InitStep { cmd: 0xC9, data: &[0x00], delay_ms: 0 },
-    InitStep { cmd: 0x36, data: &[0x48], delay_ms: 0 },
-    InitStep { cmd: 0x3A, data: &[0x11], delay_ms: 0 },
-    InitStep { cmd: 0xB9, data: &[0x20], delay_ms: 0 },
-    InitStep { cmd: 0xB8, data: &[0x29], delay_ms: 0 },
-    InitStep { cmd: 0x21, data: &[], delay_ms: 0 },
-    InitStep { cmd: 0x2A, data: &[0x12, 0x2A], delay_ms: 0 },
-    InitStep { cmd: 0x2B, data: &[0x00, 0xC7], delay_ms: 0 },
-    InitStep { cmd: 0x35, data: &[0x00], delay_ms: 0 },
-    InitStep { cmd: 0xD0, data: &[0xFF], delay_ms: 0 },
-    InitStep { cmd: 0x38, data: &[], delay_ms: 0 },
-    InitStep { cmd: 0x29, data: &[], delay_ms: 0 },
+    InitStep {
+        cmd: 0xD6,
+        data: &[0x17, 0x02],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0xD1,
+        data: &[0x01],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0xC0,
+        data: &[0x11, 0x04],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0xC1,
+        data: &[0x69, 0x69, 0x69, 0x69],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0xC2,
+        data: &[0x19, 0x19, 0x19, 0x19],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0xC4,
+        data: &[0x4B, 0x4B, 0x4B, 0x4B],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0xC5,
+        data: &[0x19, 0x19, 0x19, 0x19],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0xD8,
+        data: &[0x80, 0xE9],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0xB2,
+        data: &[0x02],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0xB3,
+        data: &[0xE5, 0xF6, 0x05, 0x46, 0x77, 0x77, 0x77, 0x77, 0x76, 0x45],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0xB4,
+        data: &[0x05, 0x46, 0x77, 0x77, 0x77, 0x77, 0x76, 0x45],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0x62,
+        data: &[0x32, 0x03, 0x1F],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0xB7,
+        data: &[0x13],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0xB0,
+        data: &[0x64],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0x11,
+        data: &[],
+        delay_ms: 200,
+    },
+    InitStep {
+        cmd: 0xC9,
+        data: &[0x00],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0x36,
+        data: &[0x48],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0x3A,
+        data: &[0x11],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0xB9,
+        data: &[0x20],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0xB8,
+        data: &[0x29],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0x21,
+        data: &[],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0x2A,
+        data: &[0x12, 0x2A],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0x2B,
+        data: &[0x00, 0xC7],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0x35,
+        data: &[0x00],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0xD0,
+        data: &[0xFF],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0x38,
+        data: &[],
+        delay_ms: 0,
+    },
+    InitStep {
+        cmd: 0x29,
+        data: &[],
+        delay_ms: 0,
+    },
 ];
 
 const WINDOW_COL: (u8, u8, u8) = (0x2A, 0x12, 0x2A);

@@ -401,7 +401,9 @@ pub fn start(
                 Err(e) => {
                     log::warn!("wifi add: invalid: {e:#}");
                     let mut resp = req.into_status_response(400)?;
-                    resp.write_all(b"{\"ok\":false,\"error\":\"ssid/password length exceeds 32/64\"}")?;
+                    resp.write_all(
+                        b"{\"ok\":false,\"error\":\"ssid/password length exceeds 32/64\"}",
+                    )?;
                     Ok(())
                 }
             }

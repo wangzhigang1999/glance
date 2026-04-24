@@ -6,8 +6,7 @@
 //!   等待 ≥12.1ms 后读 6 字节 (T_MSB, T_LSB, T_CRC, RH_MSB, RH_LSB, RH_CRC)
 //! - Sleep: 0xB098
 
-use std::thread::sleep;
-use std::time::Duration;
+use std::{thread::sleep, time::Duration};
 
 use anyhow::{Context, Result};
 use esp_idf_svc::hal::{

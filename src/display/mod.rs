@@ -19,10 +19,11 @@ pub mod framebuffer;
 pub mod st7305;
 
 use anyhow::Result;
-use embedded_graphics::pixelcolor::BinaryColor;
-use embedded_graphics::prelude::{Dimensions, DrawTarget, OriginDimensions, Size};
-use embedded_graphics::Pixel;
-
+use embedded_graphics::{
+    pixelcolor::BinaryColor,
+    prelude::{Dimensions, DrawTarget, OriginDimensions, Size},
+    Pixel,
+};
 pub use framebuffer::{FrameBuffer, HEIGHT, WIDTH};
 pub use st7305::St7305;
 
@@ -106,4 +107,3 @@ impl<'d> DrawTarget for Display<'d> {
         Ok(())
     }
 }
-

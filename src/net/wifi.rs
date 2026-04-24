@@ -94,7 +94,9 @@ impl WifiManager {
     pub fn scan_and_sort(&mut self, stored: &[WifiCreds]) -> Result<Vec<WifiCreds>> {
         // 给个空 STA 配置让 start() 能成功(scan 需要 wifi 在 STARTED 态)
         let cfg = Configuration::Client(ClientConfiguration::default());
-        self.wifi.set_configuration(&cfg).context("set_configuration (scan)")?;
+        self.wifi
+            .set_configuration(&cfg)
+            .context("set_configuration (scan)")?;
         self.wifi.start().context("wifi.start (scan)")?;
         let results = self.wifi.scan().context("wifi.scan")?;
         let _ = self.wifi.stop();
@@ -104,7 +106,10 @@ impl WifiManager {
         let mut seen: Vec<(WifiCreds, i8)> = Vec::new();
         let mut unseen: Vec<WifiCreds> = Vec::new();
         for c in stored {
-            match results.iter().find(|ap| ap.ssid.as_str() == c.ssid.as_str()) {
+            match results
+                .iter()
+                .find(|ap| ap.ssid.as_str() == c.ssid.as_str())
+            {
                 Some(ap) => {
                     log::info!("  candidate ssid={} rssi={}dBm", c.ssid, ap.signal_strength);
                     seen.push((c.clone(), ap.signal_strength));
