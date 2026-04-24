@@ -58,10 +58,10 @@ impl<'d> Display<'d> {
         for _ in 0..cycles {
             self.fb.fill(BinaryColor::On); // 全黑
             self.flush()?;
-            FreeRtos::delay_ms(400);
+            FreeRtos::delay_ms(150);
             self.fb.fill(BinaryColor::Off); // 全白
             self.flush()?;
-            FreeRtos::delay_ms(400);
+            FreeRtos::delay_ms(150);
         }
         Ok(())
     }

@@ -52,7 +52,7 @@ impl Default for RuntimeConfig {
             temp_off_c: 0.0,
             humid_off_pct: 0.0,
             tz_off_s: 8 * 3600,
-            splash_flash: 8,
+            splash_flash: 3,
         }
     }
 }
