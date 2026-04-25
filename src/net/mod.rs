@@ -12,6 +12,7 @@ pub mod github;
 pub mod log_sink;
 pub mod notifications;
 pub mod prov_ap;
+pub mod recordings_http;
 pub mod screen_http;
 pub mod sntp;
 pub mod time;

@@ -46,3 +46,8 @@ CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=3584
 # ===== BT 关掉 =====
 # 现在走 SoftAP + HTTP 门户配网,不再需要 BLE 栈(省内部 SRAM ~30KB)
 CONFIG_BT_ENABLED=n
+
+# ===== SPIFFS(板内 12MB,临时录音存储) =====
+# 文件名要装得下 "recordings/20260425-143022-001.wav" = 32 字符,默认 32 卡边缘,
+# 留点余量到 64,方便后期加 .uploaded / .tmp 之类后缀
+CONFIG_SPIFFS_OBJ_NAME_LEN=64

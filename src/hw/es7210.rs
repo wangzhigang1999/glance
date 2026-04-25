@@ -49,8 +49,10 @@ const MIC4_POWER: u8 = 0x4A;
 const MIC12_POWER: u8 = 0x4B;
 const MIC34_POWER: u8 = 0x4C;
 
-/// 30dB PGA(GAIN_0DB + 10 档 × 3dB)。模拟前端默认增益,够日常说话用。
-const GAIN_30DB: u8 = 10;
+/// MIC1 PGA 档位:0=0dB / 10=30dB / 14=37.5dB(芯片硬件上限)。
+/// 实测板内 mic 距离 ~1m,30dB 下峰值仅 4.5% 满量程,人声听不清楚。
+/// 拉满到 14(+37.5dB,~2.37× 电压),配合 fixed-point 软件再放大,清晰度上来。
+const MIC1_PGA: u8 = 14;
 
 fn write(bus: &I2cBus, reg: u8, val: u8) -> Result<()> {
     let mut drv = bus.lock().expect("i2c bus poisoned");
@@ -122,9 +124,9 @@ impl Es7210 {
         update_bits(bus, CLOCK_OFF, 0x0B, 0x00)?;
         // MIC12 整组上电
         write(bus, MIC12_POWER, 0x00)?;
-        // MIC1 gain enable + 30dB
+        // MIC1 gain enable + 拉满 PGA
         update_bits(bus, MIC1_GAIN, 0x10, 0x10)?;
-        update_bits(bus, MIC1_GAIN, 0x0F, GAIN_30DB)?;
+        update_bits(bus, MIC1_GAIN, 0x0F, MIC1_PGA)?;
         // 单 mic 不走 TDM
         write(bus, SDP_IF2, 0x00)?;
 
@@ -160,7 +162,10 @@ impl Es7210 {
         // reset 寄存器一次脉冲(官方序列)
         write(bus, RESET, 0x71)?;
         write(bus, RESET, 0x41)?;
-        log::info!("ES7210 enable OK (MIC1 analog up, +30dB PGA)");
+        log::info!(
+            "ES7210 enable OK (MIC1 analog up, PGA reg=0x{:02X})",
+            MIC1_PGA
+        );
         Ok(())
     }
 }

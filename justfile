@@ -6,6 +6,8 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
 
 # ELF 输出位置(.cargo/config.toml 里的 target-dir 短路径规避)
 elf := "D:/t/rlcd/xtensa-esp32s3-espidf/release/firmware"
+boot := "D:/t/rlcd/xtensa-esp32s3-espidf/release/bootloader.bin"
+ptbl := "D:/t/rlcd/xtensa-esp32s3-espidf/release/partition-table.bin"
 port := "COM4"
 
 # 默认:编译 + 烧 + 监视,一把流
@@ -15,9 +17,10 @@ default: flash-monitor
 build:
     cargo build --release
 
-# 编译 + 烧
+# 编译 + 烧(显式带 bootloader + 自定义 partition-table,
+# 否则 espflash 默认只烧 app,storage 分区会找不到)
 flash: build
-    espflash flash {{elf}} --port {{port}}
+    espflash flash --bootloader {{boot}} --partition-table {{ptbl}} {{elf}} --port {{port}}
 
 # 只监视(Ctrl+C 退出)
 monitor:
@@ -25,7 +28,7 @@ monitor:
 
 # 编译 + 烧 + 立即进监视器(最常用)
 flash-monitor: build
-    espflash flash {{elf}} --port {{port}} --monitor
+    espflash flash --bootloader {{boot}} --partition-table {{ptbl}} {{elf}} --port {{port}} --monitor
 
 # 不烧,直接监视 + 触发硬件复位
 reset-monitor:

@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en" class="h-full">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <title>Curiosity Lab · Recordings</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            rel="stylesheet"
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        />
+        <link
+            rel="stylesheet"
+            href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"
+            crossorigin="anonymous"
+            referrerpolicy="no-referrer"
+        />
+        <script src="https://cdn.tailwindcss.com"></script>
+        <script>
+            tailwind.config = {
+                darkMode: "media",
+                theme: {
+                    extend: {
+                        colors: {
+                            paper: { DEFAULT: "#f8f7f4", dark: "#12100b" },
+                            ink: { DEFAULT: "#252119", dark: "#efeee9" },
+                            line: { DEFAULT: "#dcd9cf", dark: "#36322a" },
+                            card: { DEFAULT: "#ffffff", dark: "#1c1911" },
+                            accent: "#bc3908",
+                        },
+                        fontFamily: {
+                            sans: ["Inter", "system-ui", "sans-serif"],
+                            mono: ['"JetBrains Mono"', "ui-monospace", "Consolas", "monospace"],
+                        },
+                    },
+                },
+            };
+        </script>
+        <style type="text/tailwindcss">
+            @layer components {
+                .btn {
+                    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-line dark:border-line-dark text-sm hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer whitespace-nowrap;
+                }
+                .btn-danger {
+                    @apply text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30;
+                }
+            }
+        </style>
+    </head>
+    <body class="bg-paper dark:bg-paper-dark text-ink dark:text-ink-dark font-sans">
+        <header class="border-b border-line dark:border-line-dark">
+            <div class="max-w-5xl mx-auto px-4 py-3 flex items-center gap-4">
+                <a href="/" class="font-semibold text-base">Curiosity Lab</a>
+                <span class="text-sm opacity-60">/ Recordings</span>
+                <div class="ml-auto flex gap-2">
+                    <a href="/" class="btn"><i class="fa-solid fa-house"></i>Home</a>
+                    <a href="/settings" class="btn"><i class="fa-solid fa-gear"></i>Settings</a>
+                    <a href="/logs.html" class="btn"><i class="fa-solid fa-file-lines"></i>Logs</a>
+                    <button id="refresh" class="btn"><i class="fa-solid fa-rotate"></i>Refresh</button>
+                    <button id="resync" class="btn" title="Re-scan storage if index seems out of sync"><i class="fa-solid fa-arrows-rotate"></i>Resync</button>
+                    <button id="del-all" class="btn btn-danger"><i class="fa-solid fa-trash-can"></i>Delete All</button>
+                </div>
+            </div>
+        </header>
+
+        <main class="max-w-5xl mx-auto px-4 py-6 space-y-4">
+            <div class="flex items-center gap-3 text-sm">
+                <div id="summary" class="opacity-70">loading…</div>
+                <button id="show-all" class="btn ml-auto hidden">Show all</button>
+            </div>
+            <div id="empty" class="hidden text-center py-16 opacity-60">
+                <i class="fa-solid fa-microphone-slash text-4xl mb-3"></i>
+                <div>No recordings yet. Talk to the mic for ≥ 0.5s to trigger one.</div>
+            </div>
+            <div id="list" class="space-y-2"></div>
+        </main>
+
+        <script>
+            const list = document.getElementById("list");
+            const summary = document.getElementById("summary");
+            const empty = document.getElementById("empty");
+            const refreshBtn = document.getElementById("refresh");
+            const showAllBtn = document.getElementById("show-all");
+
+            const DEFAULT_LIMIT = 30;
+            let curLimit = DEFAULT_LIMIT;
+            let lastSig = ""; // 简易签名:names+sizes 拼一起,变了才重建 DOM
+
+            function fmtSize(n) {
+                if (n < 1024) return n + " B";
+                if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+                return (n / (1024 * 1024)).toFixed(2) + " MB";
+            }
+            // 20260425-143202-144.wav → 2026-04-25 14:32:02.144 (固件已按本地时区写)
+            function fmtName(name) {
+                const m = name.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})-(\d{3})\.wav$/);
+                if (!m) return name;
+                return `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}:${m[6]}.${m[7]}`;
+            }
+
+            function rebuildList(files) {
+                list.innerHTML = "";
+                for (const f of files) {
+                    const url = "/api/recording?name=" + encodeURIComponent(f.name);
+                    const row = document.createElement("div");
+                    row.className =
+                        "bg-card dark:bg-card-dark border border-line dark:border-line-dark rounded-lg p-3 flex flex-wrap items-center gap-3";
+                    row.innerHTML = `
+                        <div class="flex-1 min-w-0">
+                          <div class="font-mono text-sm truncate">${fmtName(f.name)}</div>
+                          <div class="text-xs opacity-60 font-mono mt-0.5">${f.name} · ${fmtSize(f.size)}</div>
+                        </div>
+                        <audio controls preload="none" class="flex-1 min-w-[260px]" src="${url}"></audio>
+                        <a href="${url}" download="${f.name}" class="btn"><i class="fa-solid fa-download"></i>Download</a>
+                        <button class="btn btn-danger" data-del="${f.name}"><i class="fa-solid fa-trash"></i></button>
+                    `;
+                    list.appendChild(row);
+                }
+            }
+
+            async function load() {
+                refreshBtn.disabled = true;
+                try {
+                    const r = await fetch("/api/recordings?limit=" + curLimit, { cache: "no-store" });
+                    const data = await r.json();
+                    const files = data.files || [];
+                    const total = data.total ?? files.length;
+                    const totalSize = data.total_size ?? files.reduce((a, f) => a + f.size, 0);
+
+                    // 摘要
+                    if (total === 0) {
+                        summary.textContent = "0 recordings";
+                        empty.classList.remove("hidden");
+                        showAllBtn.classList.add("hidden");
+                        if (lastSig !== "") { list.innerHTML = ""; lastSig = ""; }
+                        return;
+                    }
+                    empty.classList.add("hidden");
+                    if (curLimit && total > curLimit) {
+                        summary.textContent = `Showing ${files.length} of ${total} · ${fmtSize(totalSize)} total`;
+                        showAllBtn.classList.remove("hidden");
+                        showAllBtn.textContent = `Show all ${total}`;
+                    } else {
+                        summary.textContent = `${total} recording(s) · ${fmtSize(totalSize)} total`;
+                        showAllBtn.classList.add("hidden");
+                    }
+
+                    // 仅在列表实际变化时重建 DOM(避免 audio 元素被刷掉重建闪烁)
+                    const sig = files.map((f) => f.name + ":" + f.size).join("|");
+                    if (sig !== lastSig) {
+                        rebuildList(files);
+                        lastSig = sig;
+                    }
+                } catch (e) {
+                    summary.textContent = "load failed: " + e;
+                } finally {
+                    refreshBtn.disabled = false;
+                }
+            }
+
+            list.addEventListener("click", async (e) => {
+                const btn = e.target.closest("button[data-del]");
+                if (!btn) return;
+                const name = btn.dataset.del;
+                if (!confirm("Delete " + name + "?")) return;
+                btn.disabled = true;
+                await fetch("/api/recording?name=" + encodeURIComponent(name), { method: "DELETE" });
+                lastSig = ""; // 强制下次 rebuild
+                load();
+            });
+
+            refreshBtn.addEventListener("click", load);
+            document.getElementById("resync").addEventListener("click", async () => {
+                const r = await fetch("/api/recordings/resync", { method: "POST" });
+                const j = await r.json();
+                lastSig = "";
+                load();
+                summary.textContent = `Resynced: ${j.total} entries · ${fmtSize(j.total_size || 0)}`;
+            });
+            showAllBtn.addEventListener("click", () => {
+                curLimit = curLimit === 0 ? DEFAULT_LIMIT : 0;
+                showAllBtn.textContent = curLimit === 0 ? "Show recent" : `Show all`;
+                lastSig = "";
+                load();
+            });
+            document.getElementById("del-all").addEventListener("click", async () => {
+                if (!confirm("Delete ALL recordings? This cannot be undone.")) return;
+                const r = await fetch("/api/recordings", { method: "DELETE" });
+                const j = await r.json();
+                alert("Deleted " + (j.deleted || 0) + " files");
+                lastSig = "";
+                load();
+            });
+            load();
+            // 5s 自动刷新;签名没变不会重建 DOM
+            setInterval(load, 5000);
+        </script>
+    </body>
+</html>

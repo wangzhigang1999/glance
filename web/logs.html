@@ -286,35 +286,71 @@
                     if (autoBox.checked) log.scrollTop = log.scrollHeight;
                 }
 
-                let es;
+                // 短轮询:device 端 esp-idf httpd 是单 task,SSE 长连接会卡死 server,
+                // 所以我们走 /logs.json?since=<seq> 增量拉。
+                const POLL_MS = 1000;
+                let since = 0;
+                let timer = null;
+                let inflight = false;
+                let firstFetch = true;
+
+                async function poll() {
+                    if (inflight) return;
+                    inflight = true;
+                    try {
+                        const r = await fetch("/logs.json?since=" + since, {
+                            cache: "no-store",
+                        });
+                        if (!r.ok) throw new Error("http " + r.status);
+                        const j = await r.json();
+                        // 缺口检测:服务端 next 跳过了 (next - since) 比返回行数多说明 ringbuffer 漏掉一段
+                        const expected = j.next - since;
+                        const got = j.lines.length;
+                        const dropped =
+                            since > 0 && expected > got
+                                ? expected - got
+                                : 0;
+                        since = j.next;
+                        const incoming = j.lines;
+                        if (dropped > 0) {
+                            incoming.unshift(
+                                `       W logs: ringbuffer 丢了 ${dropped} 条(客户端跟不上设备日志速度)`,
+                            );
+                        }
+                        if (incoming.length) {
+                            if (paused) {
+                                buffered.push(...incoming);
+                                if (buffered.length > MAX_ROWS)
+                                    buffered.splice(
+                                        0,
+                                        buffered.length - MAX_ROWS,
+                                    );
+                            } else {
+                                for (const l of incoming) append(l);
+                                refreshCounters();
+                                scrollToBottom();
+                            }
+                        }
+                        setStatus("ok", "live");
+                        if (firstFetch) {
+                            firstFetch = false;
+                            scrollToBottom();
+                        }
+                    } catch (e) {
+                        setStatus("err", "offline");
+                    } finally {
+                        inflight = false;
+                        timer = setTimeout(poll, POLL_MS);
+                    }
+                }
+
                 function connect() {
                     setStatus("idle", "connecting");
-                    es = new EventSource("/logs");
-                    es.onmessage = (e) => {
-                        if (paused) {
-                            buffered.push(e.data);
-                            // 防内存爆,暂停期间也限量
-                            if (buffered.length > MAX_ROWS)
-                                buffered.splice(
-                                    0,
-                                    buffered.length - MAX_ROWS,
-                                );
-                            return;
-                        }
-                        append(e.data);
-                        refreshCounters();
-                        scrollToBottom();
-                    };
-                    es.addEventListener("ready", () => {
-                        setStatus("ok", "live");
-                        scrollToBottom();
-                    });
-                    es.onerror = () => {
-                        setStatus("err", "reconnecting...");
-                        // EventSource 自带重连;这里只更新状态
-                    };
-                    es.onopen = () => setStatus("ok", "live");
+                    poll();
                 }
+                addEventListener("beforeunload", () => {
+                    if (timer) clearTimeout(timer);
+                });
 
                 pause.onclick = () => {
                     paused = !paused;

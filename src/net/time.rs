@@ -72,6 +72,38 @@ fn weekday_name(days: i64) -> &'static str {
     ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"][wd]
 }
 
+/// (year, month 1..12, day 1..31) → days-since-1970(Hinnant 正向算法)。
+/// 对 1970..9999 区间精确,无浮点。RTC 那边互相 round-trip 用。
+pub fn days_from_civil(y: i32, m: u8, d: u8) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = (if y >= 0 { y } else { y - 399 } as i64) / 400;
+    let yoe = (y as i64 - era * 400) as u64; // 0..399
+    let mp = if m > 2 {
+        (m - 3) as u64
+    } else {
+        (m + 9) as u64
+    }; // 0..11
+    let doy = (153 * mp + 2) / 5 + (d as u64 - 1); // 0..365
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // 0..146096
+    era * 146097 + doe as i64 - 719468
+}
+
+/// (Y/M/D h:m:s UTC) → Unix 秒。RTC 写时间用。
+pub fn unix_from_utc(y: i32, m: u8, d: u8, h: u8, mi: u8, s: u8) -> i64 {
+    days_from_civil(y, m, d) * 86400 + (h as i64) * 3600 + (mi as i64) * 60 + s as i64
+}
+
+/// Unix 秒 → (year, month, day, hour, minute, second) UTC。RTC 读出系统时间往回写时用。
+pub fn utc_from_unix(unix: i64) -> (i32, u8, u8, u8, u8, u8) {
+    let days = unix.div_euclid(86400);
+    let sod = unix.rem_euclid(86400);
+    let (y, m, d) = civil_from_days(days);
+    let h = (sod / 3600) as u8;
+    let mi = ((sod / 60) % 60) as u8;
+    let s = (sod % 60) as u8;
+    (y, m, d, h, mi, s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

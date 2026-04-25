@@ -9,7 +9,9 @@ pub mod button;
 pub mod chip_temp;
 pub mod es7210;
 pub mod mic;
+pub mod rtc;
 pub mod shtc3;
+pub mod storage;
 pub mod system;
 
 /// 板上所有 I2C 设备(SHTC3 / ES7210 / ES8311 / PCF85063)共用 SDA13/SCL14。

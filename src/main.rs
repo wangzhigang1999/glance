@@ -17,6 +17,7 @@ mod config;
 mod display;
 mod hw;
 mod net;
+mod recorder;
 mod ui;
 
 use std::{
@@ -49,7 +50,9 @@ use crate::{
         chip_temp::ChipTemp,
         es7210::Es7210,
         mic::Mic,
+        rtc::Rtc,
         shtc3::Shtc3,
+        storage::Storage,
         system::{mac_suffix, read_flash_stats, read_sys_stats},
         I2cBus,
     },
@@ -144,9 +147,35 @@ fn main() -> anyhow::Result<()> {
     )?;
     let i2c_bus: I2cBus = Arc::new(Mutex::new(i2c_drv));
 
+    // ---- 录音存储:走板内 12MB SPIFFS,挂在 /storage ----
+    // 真正想要的是 SD 卡,但板上 R7(CS 上拉)NC,SPI 模式起不来,先用 SPIFFS 凑合。
+    // 12MB ≈ 6 分钟 16kHz 单声道音频,Phase E 的 prune 会负责清最老的。
+    log::info!("Init internal SPIFFS partition for recordings");
+    let _storage = match Storage::mount() {
+        Ok(s) => {
+            // 启动时扫一次目录灌内存 index;之后 HTTP 全走 index,不再 read_dir
+            recorder::index_scan_storage();
+            Some(s)
+        }
+        Err(e) => {
+            log::warn!("SPIFFS mount failed (recording disabled): {e:#}");
+            None
+        }
+    };
+
     // ---- SHTC3 ----
     log::info!("Init SHTC3 sensor (addr 0x70)");
     let mut sensor = Shtc3::new(i2c_bus.clone());
+
+    // ---- PCF85063 RTC(I2C 0x51)----
+    // 板上 ML1220 钮扣电池在的话能跨断电保活;没装则 OS=1,等 SNTP 后再写回。
+    let rtc_bootstrap = Rtc::new(i2c_bus.clone());
+    match rtc_bootstrap.sync_to_system() {
+        Ok(true) => log::info!("RTC valid, system time loaded from RTC"),
+        Ok(false) => log::info!("RTC OS=1 (no backup battery / first boot), waiting for SNTP"),
+        Err(e) => log::warn!("RTC read failed: {e:#}"),
+    }
+    drop(rtc_bootstrap);
 
     // ---- ES7210 + I2S MIC(骨架:MIC1 / 16kHz / 16-bit / mono)----
     // 等 A3V3 稳了再发 I2C,免得首次写寄存器 NACK
@@ -170,14 +199,16 @@ fn main() -> anyhow::Result<()> {
                     if let Err(e) = mic_codec.enable() {
                         log::warn!("ES7210 enable failed (analog path off): {e:#}");
                     }
+                    let has_storage = _storage.is_some();
+                    let tz_for_rec = config.read().unwrap().tz_off_s as i64;
                     std::thread::Builder::new()
-                        .name("mic_rms".into())
-                        // 8K:loop 里 log::info!("MIC RMS=...") 会过 log_sink 的 format!,
-                        // fmt 机器一把吃 1-2KB,4K 顶不住会爆栈
-                        .stack_size(8192)
-                        .spawn(move || mic_rms_loop(mic))
+                        .name("vad_rec".into())
+                        // 12K:VAD 循环里有 log::info! + format!(filename) + std::fs::File ops,
+                        // 单 format! 一把就 1-2KB,SPIFFS write 还要点,12K 才稳。
+                        .stack_size(12288)
+                        .spawn(move || recorder::vad_record_loop(mic, has_storage, tz_for_rec))
                         .map(|_| ())
-                        .unwrap_or_else(|e| log::warn!("spawn mic_rms thread failed: {e:#}"));
+                        .unwrap_or_else(|e| log::warn!("spawn vad_rec thread failed: {e:#}"));
                 }
             },
             Err(e) => log::warn!("Mic init failed: {e:#}"),
@@ -253,6 +284,30 @@ fn main() -> anyhow::Result<()> {
     // ---- SNTP(非阻塞,后台同步) ----
     // _sntp 必须保持在作用域内,否则 drop 会 sntp_stop() 终结对时
     let _sntp = Sntp::start()?;
+
+    // ---- SNTP 成功一次后把网络时间写回 RTC,下次开机能直接用 ----
+    // 单次 oneshot:轮询 unix_secs() 拿到值就写,2 分钟拿不到就放弃。
+    {
+        let bus_for_rtc = i2c_bus.clone();
+        std::thread::Builder::new()
+            .name("rtc_sync".into())
+            .stack_size(3072)
+            .spawn(move || {
+                let rtc = Rtc::new(bus_for_rtc);
+                for _ in 0..120 {
+                    sleep(Duration::from_secs(1));
+                    if crate::net::time::unix_secs().is_some() {
+                        if let Err(e) = rtc.sync_from_system() {
+                            log::warn!("RTC writeback failed: {e:#}");
+                        }
+                        return;
+                    }
+                }
+                log::warn!("RTC writeback: SNTP did not sync in 120s, giving up");
+            })
+            .map(|_| ())
+            .unwrap_or_else(|e| log::warn!("spawn rtc_sync thread failed: {e:#}"));
+    }
 
     // ---- GitHub 共享状态(contrib / notif / activity) ----
     let contrib_shared: Arc<Mutex<Option<ContribData>>> = Arc::new(Mutex::new(None));
@@ -588,39 +643,6 @@ fn try_connect_n(wifi: &mut WifiManager, creds: &WifiCreds, budget: u32) -> bool
         }
     }
     false
-}
-
-/// 麦克风骨架验证 loop:每帧 1024 个 i16(stereo,L=R=MIC1),约 32ms 一帧。
-/// 算 left 声道 RMS,每秒打一行日志——对着麦克风讲话能看到数字明显涨。
-fn mic_rms_loop(mut mic: Mic) -> ! {
-    let mut buf = [0i16; 1024];
-    let mut frame_n: u32 = 0;
-    let mut acc_sq: u64 = 0;
-    let mut acc_n: u64 = 0;
-    loop {
-        match mic.read(&mut buf, 1000) {
-            Ok(n) => {
-                // stereo,左声道在偶数 idx
-                for s in buf[..n].iter().step_by(2) {
-                    let v = *s as i32;
-                    acc_sq += (v * v) as u64;
-                    acc_n += 1;
-                }
-                frame_n += 1;
-                // 16kHz / (1024/2) ≈ 31 帧/秒
-                if frame_n % 31 == 0 && acc_n > 0 {
-                    let rms = ((acc_sq / acc_n) as f64).sqrt() as u32;
-                    log::info!("MIC RMS={rms} (n_frames={frame_n})");
-                    acc_sq = 0;
-                    acc_n = 0;
-                }
-            }
-            Err(e) => {
-                log::error!("mic read error: {e:#}");
-                std::thread::sleep(Duration::from_millis(500));
-            }
-        }
-    }
 }
 
 /// 把 `src` 尽量多地拷入 `dst`(不超 capacity),先 clear。装不下的字符直接丢。

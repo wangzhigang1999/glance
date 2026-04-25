@@ -15,7 +15,6 @@
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::RecvTimeoutError,
         Arc, Mutex,
     },
     time::Duration,
@@ -468,51 +467,25 @@ pub fn start(
         },
     )?;
 
-    // ---- GET /logs:Server-Sent Events,实时日志流 ----
-    // 长连接,每个 SSE client 占一个 httpd worker。客户端断开时本 handler write 报错退出,
-    // 同步 channel 在 Drop 后下次广播自动从订阅列表里剔除。
+    // ---- GET /logs.json?since=<seq>:增量拉日志(短轮询)----
+    // esp-idf httpd 单 task 处理所有 handler,不能用 SSE 长连接(会卡死整个 server)。
+    // 客户端按 1s 间隔轮询;首次 since=0 拿全量 history,之后用上次返回的 next_seq。
     let hub_for_logs = log_hub.clone();
     server.fn_handler(
-        "/logs",
+        "/logs.json",
         Method::Get,
         move |req| -> Result<(), anyhow::Error> {
+            let since = parse_since(req.uri());
+            let (next_seq, lines) = hub_for_logs.since(since);
+            let json = encode_logs_json(next_seq, &lines);
+            let len = json.len().to_string();
             let headers = [
-                ("content-type", "text/event-stream; charset=utf-8"),
+                ("content-type", "application/json; charset=utf-8"),
                 ("cache-control", "no-store"),
-                ("x-accel-buffering", "no"),
-                // 即时禁用 keepalive,断了好让浏览器 EventSource 自动重连
-                ("connection", "close"),
+                ("content-length", len.as_str()),
             ];
             let mut resp = req.into_response(200, Some("OK"), &headers)?;
-
-            // 1) 重放 history,新连接进来先看到上下文
-            let snapshot = hub_for_logs.snapshot();
-            for line in &snapshot {
-                if write_sse_event(&mut resp, line).is_err() {
-                    return Ok(());
-                }
-            }
-            // 标记历史段结束,前端可在此清理 spinner
-            let _ = resp.write_all(b"event: ready\ndata: \n\n");
-
-            // 2) 实时订阅
-            let rx = hub_for_logs.subscribe();
-            loop {
-                match rx.recv_timeout(Duration::from_secs(15)) {
-                    Ok(line) => {
-                        if write_sse_event(&mut resp, &line).is_err() {
-                            break;
-                        }
-                    }
-                    Err(RecvTimeoutError::Timeout) => {
-                        // SSE 注释行做 keepalive,顺便用来探测客户端是否还在
-                        if resp.write_all(b": ping\n\n").is_err() {
-                            break;
-                        }
-                    }
-                    Err(RecvTimeoutError::Disconnected) => break,
-                }
-            }
+            resp.write_all(json.as_bytes())?;
             Ok(())
         },
     )?;
@@ -536,34 +509,48 @@ pub fn start(
         },
     )?;
 
+    // ---- 录音文件浏览(/recordings.html + /api/recordings + /api/recording) ----
+    crate::net::recordings_http::register(&mut server)?;
+
     log::info!(
-        "Screen HTTP server up on http://<ip>/  (/, /settings, /logs.html, /logs, /screen.bmp, /next, /api/config, /api/wifi{{,/remove}}, /api/wifi_forget, /api/reboot)"
+        "Screen HTTP server up on http://<ip>/  (/, /settings, /logs.html, /logs.json, /screen.bmp, /next, /api/config, /api/wifi{{,/remove}}, /api/wifi_forget, /api/reboot, /recordings.html, /api/recording{{s}})"
     );
     Ok(server)
 }
 
-/// 把一行日志写成 SSE `data:` 事件。`line` 里若含 `\n`,按 SSE 规范逐行 prefix。
-fn write_sse_event<W: esp_idf_svc::io::Write>(
-    resp: &mut W,
-    line: &str,
-) -> Result<(), <W as esp_idf_svc::io::ErrorType>::Error> {
-    // 多行支持:按 SSE,每条 \n 都要再来一行 "data: "
-    // 简化路径:绝大多数 log 是单行
-    if !line.contains('\n') {
-        resp.write_all(b"data: ")?;
-        resp.write_all(line.as_bytes())?;
-        resp.write_all(b"\n\n")?;
-        return Ok(());
-    }
-    for (i, seg) in line.split('\n').enumerate() {
-        if i > 0 {
-            resp.write_all(b"\n")?;
+/// 从 uri 里抠 `?since=<u64>`,缺省/解析失败回 0(=要全量)。
+fn parse_since(uri: &str) -> u64 {
+    let q = match uri.split_once('?') {
+        Some((_, q)) => q,
+        None => return 0,
+    };
+    for kv in q.split('&') {
+        if let Some(v) = kv.strip_prefix("since=") {
+            return v.parse().unwrap_or(0);
         }
-        resp.write_all(b"data: ")?;
-        resp.write_all(seg.as_bytes())?;
     }
-    resp.write_all(b"\n\n")?;
-    Ok(())
+    0
+}
+
+/// 手写 JSON,省一次 `Vec<&String>` 中转 + serde 模板代码。
+/// 输出形如 `{"next":42,"lines":["...","..."]}`,字符串走 serde_json 转义。
+fn encode_logs_json(next: u64, lines: &[String]) -> String {
+    let mut out = String::with_capacity(64 + lines.iter().map(|l| l.len() + 4).sum::<usize>());
+    out.push_str("{\"next\":");
+    out.push_str(&next.to_string());
+    out.push_str(",\"lines\":[");
+    for (i, l) in lines.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        // serde_json::to_string 给个合法 JSON 字符串字面量(带引号 + 转义)
+        match serde_json::to_string(l) {
+            Ok(s) => out.push_str(&s),
+            Err(_) => out.push_str("\"\""),
+        }
+    }
+    out.push_str("]}");
+    out
 }
 
 /// 用 token 调用 `GET https://api.github.com/user`,取 `login`
