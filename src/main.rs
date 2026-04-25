@@ -191,12 +191,12 @@ fn main() -> anyhow::Result<()> {
     }
     drop(rtc_bootstrap);
 
-    // ---- ES7210 + I2S MIC(骨架:MIC1 / 16kHz / 16-bit / mono)----
+    // ---- ES7210 + I2S MIC(双麦 MIC1+MIC2 / 16kHz / 16-bit / stereo)+ esp-sr AFE ----
     // 等 A3V3 稳了再发 I2C,免得首次写寄存器 NACK
     sleep(Duration::from_millis(50));
     let mut mic_codec = Es7210::new(i2c_bus.clone());
     if let Err(e) = mic_codec.open_mic12() {
-        log::warn!("ES7210 open failed (mic skeleton disabled): {e:#}");
+        log::warn!("ES7210 open failed (mic disabled): {e:#}");
     } else {
         match Mic::new(
             peripherals.i2s0,
@@ -213,16 +213,22 @@ fn main() -> anyhow::Result<()> {
                     if let Err(e) = mic_codec.enable() {
                         log::warn!("ES7210 enable failed (analog path off): {e:#}");
                     }
-                    let has_storage = has_storage_backend;
-                    let tz_for_rec = config.read().unwrap().tz_off_s as i64;
-                    std::thread::Builder::new()
-                        .name("vad_rec".into())
-                        // 12K:VAD 循环里有 log::info! + format!(filename) + std::fs::File ops,
-                        // 单 format! 一把就 1-2KB,SPIFFS write 还要点,12K 才稳。
-                        .stack_size(12288)
-                        .spawn(move || recorder::vad_record_loop(mic, has_storage, tz_for_rec))
-                        .map(|_| ())
-                        .unwrap_or_else(|e| log::warn!("spawn vad_rec thread failed: {e:#}"));
+                    // AFE 创建在主线程,失败就不开录音(其它功能照跑)
+                    match crate::hw::afe::Afe::new() {
+                        Ok(afe) => {
+                            let has_storage = has_storage_backend;
+                            let tz_for_rec = config.read().unwrap().tz_off_s as i64;
+                            if let Err(e) = recorder::spawn_afe_pipeline(
+                                mic,
+                                Arc::new(afe),
+                                has_storage,
+                                tz_for_rec,
+                            ) {
+                                log::warn!("spawn AFE pipeline failed: {e:#}");
+                            }
+                        }
+                        Err(e) => log::warn!("AFE init failed (recording disabled): {e:#}"),
+                    }
                 }
             },
             Err(e) => log::warn!("Mic init failed: {e:#}"),

@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use esp_idf_svc::hal::i2c::I2cDriver;
 
+pub mod afe;
 pub mod battery;
 pub mod button;
 pub mod chip_temp;

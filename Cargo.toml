@@ -30,3 +30,11 @@ serde_json = "1"
 
 [build-dependencies]
 embuild = "0.33"
+
+# 把 esp-sr (Audio Front End) 拉进来,统一通过 esp-idf 组件管理器下载
+# bindgen 会自动把 src/include/afe_bindings.h 里 include 的头文件生成到
+# `esp_idf_svc::sys::afe::*` 命名空间,Rust 侧用 `use esp_idf_svc::sys::afe;` 即可
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "espressif/esp-sr", version = "^2.1" }
+bindings_header = "src/include/afe_bindings.h"
+bindings_module = "afe"

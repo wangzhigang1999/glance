@@ -6,7 +6,7 @@
 //! 用法分两步,中间必须把 I2S 跑起来:
 //! ```ignore
 //! let mut codec = Es7210::new(bus);
-//! codec.open_mic1()?;       // I2C 配寄存器,内部时钟仍关
+//! codec.open_mic12()?;      // I2C 配寄存器(MIC1+MIC2),内部时钟仍关
 //! mic.start()?;             // ESP32 I2S → MCLK/BCLK/LRCK 开始喂
 //! codec.enable()?;          // 上电模拟通路 + 释放时钟,从此 SDOUT 出 PCM
 //! ```
@@ -49,10 +49,10 @@ const MIC4_POWER: u8 = 0x4A;
 const MIC12_POWER: u8 = 0x4B;
 const MIC34_POWER: u8 = 0x4C;
 
-/// MIC1 PGA 档位:0=0dB / 10=30dB / 14=37.5dB(芯片硬件上限)。
+/// MIC1/MIC2 PGA 档位:0=0dB / 10=30dB / 14=37.5dB(芯片硬件上限)。
 /// 实测板内 mic 距离 ~1m,30dB 下峰值仅 4.5% 满量程,人声听不清楚。
 /// 拉满到 14(+37.5dB,~2.37× 电压),配合 fixed-point 软件再放大,清晰度上来。
-const MIC1_PGA: u8 = 14;
+const MIC_PGA: u8 = 14;
 
 fn write(bus: &I2cBus, reg: u8, val: u8) -> Result<()> {
     let mut drv = bus.lock().expect("i2c bus poisoned");
@@ -86,7 +86,9 @@ impl Es7210 {
     }
 
     /// 阶段 1:配寄存器,内部时钟仍关。可在 I2S 启动前调用。
-    pub fn open_mic1(&mut self) -> Result<()> {
+    /// 同时启用 MIC1+MIC2(I2S 立体声槽 L=MIC1 / R=MIC2),给 esp-sr AFE 双麦
+    /// 波束(BSS)用。
+    pub fn open_mic12(&mut self) -> Result<()> {
         let bus = &self.bus;
 
         // 软复位
@@ -113,30 +115,32 @@ impl Es7210 {
         // MAINCLK 分频清状态
         write(bus, MAINCLK, 0xC1)?;
 
-        // mic_select(只开 MIC1):4 个 mic 的 gain bit4 先全清
+        // mic_select:4 个 mic 的 gain bit4 先全清
         for r in [MIC1_GAIN, MIC2_GAIN, MIC3_GAIN, MIC4_GAIN] {
             update_bits(bus, r, 0x10, 0x00)?;
         }
         // MIC12 / MIC34 整组先关
         write(bus, MIC12_POWER, 0xFF)?;
         write(bus, MIC34_POWER, 0xFF)?;
-        // 启 MIC1:reg 0x01 清 ADC1 路时钟掩码 0x0B
-        update_bits(bus, CLOCK_OFF, 0x0B, 0x00)?;
+        // 启 MIC1+MIC2:reg 0x01 清 ADC1+ADC2 路时钟掩码 0x0F(原 0x0B 只放 MIC1)
+        update_bits(bus, CLOCK_OFF, 0x0F, 0x00)?;
         // MIC12 整组上电
         write(bus, MIC12_POWER, 0x00)?;
-        // MIC1 gain enable + 拉满 PGA
+        // MIC1 + MIC2 gain enable + 拉满 PGA
         update_bits(bus, MIC1_GAIN, 0x10, 0x10)?;
-        update_bits(bus, MIC1_GAIN, 0x0F, MIC1_PGA)?;
-        // 单 mic 不走 TDM
+        update_bits(bus, MIC1_GAIN, 0x0F, MIC_PGA)?;
+        update_bits(bus, MIC2_GAIN, 0x10, 0x10)?;
+        update_bits(bus, MIC2_GAIN, 0x0F, MIC_PGA)?;
+        // 双 mic 走 I2S 标准 stereo,不走 TDM(reg 0x12 = 0)
         write(bus, SDP_IF2, 0x00)?;
 
         // 16-bit + I2S philips
         // SDP_IF1 bits[7:5]=011 → 16-bit;bits[1:0]=00 → I2S NORMAL
         write(bus, SDP_IF1, 0x60)?;
 
-        // 记下 reg 0x01 的当前值,enable 时写回(此处一般是 0x34)
+        // 记下 reg 0x01 的当前值,enable 时写回(此处一般是 0x30,0x0F 全开)
         self.off_reg = read(bus, CLOCK_OFF)?;
-        log::info!("ES7210 open_mic1 OK (off_reg=0x{:02X})", self.off_reg);
+        log::info!("ES7210 open_mic12 OK (off_reg=0x{:02X})", self.off_reg);
         Ok(())
     }
 
@@ -163,8 +167,8 @@ impl Es7210 {
         write(bus, RESET, 0x71)?;
         write(bus, RESET, 0x41)?;
         log::info!(
-            "ES7210 enable OK (MIC1 analog up, PGA reg=0x{:02X})",
-            MIC1_PGA
+            "ES7210 enable OK (MIC1+MIC2 analog up, PGA reg=0x{:02X})",
+            MIC_PGA
         );
         Ok(())
     }

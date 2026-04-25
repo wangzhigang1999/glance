@@ -1,27 +1,47 @@
-//! VAD 触发的录音线程:听到人说话就开 WAV 文件,静音 1.2s 关闭。
+//! 基于 esp-sr AFE 的 VAD 触发录音(双麦 BSS + WebRTC NS + WebRTC VAD)。
 //!
-//! VAD 算法:**自适应能量阈值 + 磁滞 + "宽进严出"**
-//! - 空闲态:EMA 跟踪噪声底(NF),阈值 = max(NF × 4, 200)
-//! - 录音态:close 阈值放低到 NF × 1.8(磁滞,中间小停顿不会出戏)
-//! - 静音连续 38 帧(~1.2s)→ 关段
-//! - 段长 < 16 帧(~512ms)→ 直接删,认作误触发(关门 / 咳嗽)
-//! - 段长 ≥ 940 帧(~30s)→ 强制切段,防背景噪声常驻把整盘录满
-//! - 每段开头预滚 200ms,确保第一个字不被切
+//! 旧版是手搓能量阈值 VAD,关门 / 键盘 / 空调一来就误开,段切碎到大模型 ASR
+//! 拿不到完整句子。现在用 esp-sr 官方 pipeline:对人声敏感,对噪声沉默。
 //!
-//! 文件名:`/storage/YYYYMMDD-HHMMSS.wav`(系统时间没同步则 `/storage/up{seconds}.wav`)
+//! 数据流(两线程):
+//! ```text
+//! [feed thread]                       [fetch thread]
+//! Mic.read(stereo i16) ──▶ afe.feed()
+//!                                      afe.fetch() ──▶ FetchFrame
+//!                                                       ├─ vad_speech?
+//!                                                       ├─ data: 单声道去噪
+//!                                                       └─ vad_cache: 触发前预滚
+//!                                                          │
+//!                                                          ▼
+//!                                                       state machine
+//!                                                          │
+//!                                                          ▼
+//!                                                       WavWriter → /storage/*.wav
+//! ```
 //!
-//! 输入:I2S 16kHz / 16-bit / 立体声(L=MIC1,R=MIC2),只取 left 写盘(单声道 WAV)。
+//! AFE 内部已经做了:
+//! - 双麦波束(BSS)→ 单声道
+//! - WebRTC NS → 压低稳态噪声
+//! - WebRTC VAD + min_speech/min_noise 时间门 → vad_state 是去抖过的
+//! - 触发前的几帧自动缓存到 `vad_cache`,保证首字不被切
+//!
+//! 我们这层只管 vad_speech 转换 + 段长上下限 + 写文件。
 
 use std::{
-    collections::VecDeque,
     fs::{self, File},
     io::{Seek, SeekFrom, Write},
-    sync::Mutex,
+    sync::{
+        mpsc::{self, SyncSender},
+        Arc, Mutex,
+    },
+    thread,
     time::{Duration, Instant},
 };
 
+use anyhow::Result;
+
 use crate::{
-    hw::mic::Mic,
+    hw::{afe::Afe, mic::Mic},
     net::time::{unix_secs, utc_from_unix},
 };
 
@@ -90,35 +110,20 @@ pub fn index_list_paged(offset: usize, limit: usize) -> (Vec<RecEntry>, usize, u
 }
 
 const SAMPLE_RATE: u32 = 16_000;
-/// 每帧 512 个 mono i16(左声道),~32ms
-const FRAME_MONO: usize = 512;
-/// 31.25 fps;参数都按 fps≈31 算
-const _FPS: u32 = SAMPLE_RATE / FRAME_MONO as u32;
 
-/// 预滚:段开头前 ~224ms 放进文件,避免第一个音节被切
-const PREROLL_FRAMES: usize = 7;
-/// hangover:静音连续 ~2.4s 才判定段结束。
-/// 自然句间停顿 / 思考 / 换气常 1-2s,设短了一段对话被切成 N 段。
-const HANGOVER_FRAMES: u32 = 75;
-/// 最短段:< ~512ms 直接 discard,认作误触发
-const MIN_SEG_FRAMES: u32 = 16;
-/// 最长段:~60s 上限,防背景噪声常驻把卡录爆;长独白也够
-const MAX_SEG_FRAMES: u32 = 1900;
-/// 启动头 ~2s 不开新段,避开 ES7210/I2S 上电瞬态噗
-const STARTUP_BLANK_FRAMES: u32 = 60;
+// ----- 帧时间换算(AFE_TYPE_SR/HIGH_PERF 的 chunk 是 256 sample = 16ms;实际从 Afe 取) -----
+// 下面的"frames"全部按 fetch 帧数算
 
-/// 噪声底初值。环境会很快被 EMA 拉到真实底
-const NF_INIT: f32 = 50.0;
-/// 空闲态 EMA 平滑系数(每帧 2% 拉向当前 RMS)
-const NF_ALPHA: f32 = 0.02;
-/// 开门阈值倍率:RMS > NF × 4 触发录音
-const OPEN_RATIO: f32 = 4.0;
-/// 关门阈值倍率:录音中 RMS < NF × 1.3 才计 silence。
-/// 旧值 1.8 太敏感 → 句中弱音节一掉就计为静音 → hangover 触发 → 切段。
-/// 现在只有 RMS 真的接近底噪才计,正常说话不会出戏。
-const CLOSE_RATIO: f32 = 1.3;
-/// 噪声底极低时(完全安静)也别太敏感,绝对地板 200
-const ABS_MIN_OPEN: f32 = 200.0;
+/// 录音过程中允许的尾静音(AFE 已经有 2s min_noise 内部去抖,这里再延 ~1s 给收尾)。
+/// 总尾部容忍 ≈ 3s,自然换气 / 思考 / 找词 都不会出戏。
+const HANGOVER_FRAMES: u32 = 60;
+/// 段太短直接 discard,认作误触发(< ~512ms,通常是关门/咳嗽)。
+const MIN_SEG_FRAMES: u32 = 32;
+
+/// 流式 chunk 阈值:fetch 攒够这么多 i16 就 send 给 finalizer 落盘。
+/// 256KB ≈ 8s 音频(单声道 16kHz × 2 byte = 32KB/s)。给 finalizer 的 channel
+/// capacity=2,所以最多在 PSRAM 里压 ~16s 未写入数据(512KB),安全 OK。
+const CHUNK_SAMPLES: usize = 256 * 1024 / 2;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum State {
@@ -126,164 +131,299 @@ enum State {
     Recording,
 }
 
-/// 阻塞式录音线程。`has_storage = false` 时只跑 VAD 日志,不写盘。
-/// `tz_off_s` 用来把 RTC 的 UTC 转换成本地时间写文件名。
-pub fn vad_record_loop(mut mic: Mic, has_storage: bool, tz_off_s: i64) -> ! {
+/// 启动 feed + fetch + finalizer 三个线程。`mic` 被 feed 线程拿走,`afe` 用 Arc 共享。
+///
+/// 三线程拆分原因:
+/// - feed: 阻塞在 I2S read,绝不能被别的事卡住
+/// - fetch: 阻塞在 AFE fetch,只做状态机 + 内存 push,不碰 SPIFFS
+/// - finalizer: 段结束时一次性把 PSRAM 里的整段 PCM 写到 SPIFFS,慢就让它慢
+///
+/// 之前的两线程把 SPIFFS write 放在 fetch 里,SPIFFS 单次 write 吃 30-100ms,
+/// 长段累积下来 fetch 跟不上 AFE feed,ringbuf 持续 full。
+pub fn spawn_afe_pipeline(
+    mut mic: Mic,
+    afe: Arc<Afe>,
+    has_storage: bool,
+    tz_off_s: i64,
+) -> Result<()> {
+    let feed_chunk = afe.feed_chunksize();
+    let feed_ch = afe.feed_channels();
+    let total_in = feed_chunk * feed_ch;
     log::info!(
-        "VAD recorder start (preroll={}f hangover={}f({}s) min={}f max={}f open=NF×{} close=NF×{} tz={}h storage={})",
-        PREROLL_FRAMES,
+        "AFE pipeline start: feed_chunk={} sample × {} ch = {} i16/frame",
+        feed_chunk,
+        feed_ch,
+        total_in
+    );
+
+    // ---- finalizer channel:fetch → finalizer ----
+    // capacity=2:一段在写,下一段开始攒;再多堆积时 fetch 会短暂 block,
+    // 这种背压比无界更安全(防 RAM 爆)。
+    let (tx, rx) = mpsc::sync_channel::<FinalizerCmd>(2);
+
+    // ---- feed 线程:I2S read → afe.feed ----
+    let afe_feed = Arc::clone(&afe);
+    thread::Builder::new()
+        .name("afe_feed".into())
+        // 8KB:就读 I2S + memcpy + feed,栈占用很少
+        .stack_size(8192)
+        .spawn(move || {
+            let mut buf = vec![0i16; total_in];
+            loop {
+                match mic.read(&mut buf, 1000) {
+                    Ok(n) => {
+                        // n = i16 sample count;期望 == total_in。少了就用 0 填齐。
+                        if n < total_in {
+                            for s in &mut buf[n..] {
+                                *s = 0;
+                            }
+                        }
+                        if let Err(e) = afe_feed.feed(&buf) {
+                            log::warn!("afe.feed: {e:#}");
+                            thread::sleep(Duration::from_millis(50));
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("mic.read: {e:#}");
+                        thread::sleep(Duration::from_millis(500));
+                    }
+                }
+            }
+        })?;
+
+    // ---- finalizer 线程:把 (path, Vec<i16>) 写成 WAV ----
+    thread::Builder::new()
+        .name("afe_finalizer".into())
+        // 12KB:File::create + write_all + flush,SPIFFS API 偶尔吃栈
+        .stack_size(12288)
+        .spawn(move || finalizer_loop(rx))?;
+
+    // ---- fetch 线程:afe.fetch → 状态机 → 内存 push,close 时 send 给 finalizer ----
+    thread::Builder::new()
+        .name("afe_fetch".into())
+        // 12KB:状态机 + log::info! + format!(filename),不碰 SPIFFS
+        .stack_size(12288)
+        .spawn(move || fetch_loop(afe, has_storage, tz_off_s, tx))?;
+
+    Ok(())
+}
+
+/// finalizer 接受的流式命令。Begin → 多次 Chunk → End/Discard。
+/// 命令必须按顺序到达(SyncSender 是 FIFO,fetch 线程串行 send,OK)。
+enum FinalizerCmd {
+    /// 开新段:打开文件,写 0-size 占位 WAV 头(crash 也是合法 0 长度 WAV)
+    Begin { path: String },
+    /// 追加一段 PCM(已经是 fetch 累积的 chunk)
+    Chunk { samples: Vec<i16> },
+    /// 段结束:flush + seek 回头补 RIFF/data 真实 size + 落 index
+    End,
+    /// 段太短(< MIN_SEG_FRAMES):删文件,index 也不进
+    Discard,
+}
+
+/// finalizer 线程内部维护当前打开的文件 + 已写 sample 数。
+struct OpenSeg {
+    file: File,
+    path: String,
+    total_samples: u32,
+}
+
+fn finalizer_loop(rx: mpsc::Receiver<FinalizerCmd>) {
+    let mut cur: Option<OpenSeg> = None;
+    let mut t_open = Instant::now();
+    while let Ok(cmd) = rx.recv() {
+        match cmd {
+            FinalizerCmd::Begin { path } => {
+                if let Some(prev) = cur.take() {
+                    log::warn!(
+                        "finalizer: Begin without End on previous {}, dropping",
+                        prev.path
+                    );
+                    let _ = fs::remove_file(&prev.path);
+                }
+                t_open = Instant::now();
+                match File::create(&path).and_then(|mut f| {
+                    f.write_all(&wav_header(0))?;
+                    Ok(f)
+                }) {
+                    Ok(file) => {
+                        cur = Some(OpenSeg {
+                            file,
+                            path,
+                            total_samples: 0,
+                        });
+                    }
+                    Err(e) => log::warn!("finalizer: Begin {path} failed: {e:#}"),
+                }
+            }
+            FinalizerCmd::Chunk { samples } => {
+                if let Some(seg) = cur.as_mut() {
+                    let bytes: &[u8] = unsafe {
+                        core::slice::from_raw_parts(
+                            samples.as_ptr() as *const u8,
+                            samples.len() * 2,
+                        )
+                    };
+                    if let Err(e) = seg.file.write_all(bytes) {
+                        log::warn!("finalizer: Chunk write {} failed: {e:#}", seg.path);
+                        // 保持 cur,后续 End 会去补 header(已写部分仍是合法 prefix)
+                    }
+                    seg.total_samples += samples.len() as u32;
+                } else {
+                    log::warn!(
+                        "finalizer: Chunk without Begin, dropping {} samples",
+                        samples.len()
+                    );
+                }
+            }
+            FinalizerCmd::End => {
+                if let Some(mut seg) = cur.take() {
+                    let data_size = seg.total_samples * 2;
+                    let res = seg
+                        .file
+                        .seek(SeekFrom::Start(0))
+                        .and_then(|_| seg.file.write_all(&wav_header(data_size)))
+                        .and_then(|_| seg.file.flush());
+                    if let Err(e) = res {
+                        log::warn!("finalizer: End rewrite header {} failed: {e:#}", seg.path);
+                        let _ = fs::remove_file(&seg.path);
+                    } else {
+                        let total_bytes = data_size as u64 + 44;
+                        let basename = seg
+                            .path
+                            .rsplit_once('/')
+                            .map(|(_, n)| n)
+                            .unwrap_or(seg.path.as_str())
+                            .to_string();
+                        index_push(basename, total_bytes);
+                        log::info!(
+                            "finalizer: saved {} ({} samples, {:.1}s wall total)",
+                            seg.path,
+                            seg.total_samples,
+                            t_open.elapsed().as_secs_f32()
+                        );
+                    }
+                }
+            }
+            FinalizerCmd::Discard => {
+                if let Some(seg) = cur.take() {
+                    drop(seg.file);
+                    let _ = fs::remove_file(&seg.path);
+                    log::info!("finalizer: discarded {}", seg.path);
+                }
+            }
+        }
+    }
+    log::warn!("finalizer: channel closed, exiting");
+}
+
+fn fetch_loop(afe: Arc<Afe>, has_storage: bool, tz_off_s: i64, tx: SyncSender<FinalizerCmd>) -> ! {
+    let fetch_chunk = afe.fetch_chunksize();
+    let fps = SAMPLE_RATE as f32 / fetch_chunk as f32;
+    log::info!(
+        "AFE fetch loop start (fetch_chunk={} sample, fps={:.1}, hangover={}f min={}f chunk={}KB tz={}h storage={})",
+        fetch_chunk,
+        fps,
         HANGOVER_FRAMES,
-        HANGOVER_FRAMES as f32 * FRAME_MONO as f32 / SAMPLE_RATE as f32,
         MIN_SEG_FRAMES,
-        MAX_SEG_FRAMES,
-        OPEN_RATIO,
-        CLOSE_RATIO,
+        CHUNK_SAMPLES * 2 / 1024,
         tz_off_s / 3600,
         has_storage,
     );
 
-    // 给 SNTP / RTC 一点时间灌系统时间(0 帧 = 不等)。最多等 30s,文件名不至于用 uptime。
+    // 给 SNTP / RTC 一点时间灌系统时间。最多等 30s,文件名不至于用 uptime。
     if has_storage {
         wait_for_clock(Duration::from_secs(30));
     }
 
-    let mut stereo = [0i16; 1024]; // 1024 i16 = 512 stereo points = 32ms
-    let mut mono = [0i16; FRAME_MONO];
-    let mut preroll: VecDeque<[i16; FRAME_MONO]> = VecDeque::with_capacity(PREROLL_FRAMES + 1);
-
-    let mut nf = NF_INIT;
     let mut state = State::Idle;
     let mut silence: u32 = 0;
     let mut seg_frames: u32 = 0;
-    let mut writer: Option<WavWriter> = None;
-    let mut total_frames: u32 = 0;
-
-    // 周期性 dump VAD 状态(每 ~30 帧 ≈ 1s)
+    let mut seg: Option<SegBuf> = None;
     let mut log_tick: u32 = 0;
 
     loop {
-        let n = match mic.read(&mut stereo, 1000) {
-            Ok(n) => n,
-            Err(e) => {
-                log::error!("mic read: {e:#}");
-                std::thread::sleep(Duration::from_millis(500));
-                continue;
-            }
+        let Some(frame) = afe.fetch() else {
+            log::warn!("AFE fetch returned None (ret_value < 0)");
+            thread::sleep(Duration::from_millis(50));
+            continue;
         };
-        // n = i16 sample count (L+R 算两点);左声道在偶数 idx
-        let mono_n = (n / 2).min(FRAME_MONO);
-        for i in 0..mono_n {
-            mono[i] = stereo[i * 2];
-        }
-        let frame = &mono[..mono_n];
-        let rms = compute_rms(frame);
-        total_frames += 1;
-        let in_blank = total_frames < STARTUP_BLANK_FRAMES;
 
-        // --- 周期性日志 ---
-        log_tick = (log_tick + 1) % 30;
+        // 周期性日志:每 ~62 帧 ≈ 1s
+        log_tick = (log_tick + 1) % 62;
         if log_tick == 0 {
             log::info!(
-                "VAD: rms={:.0} nf={:.0} state={:?} seg={}{}",
-                rms,
-                nf,
+                "AFE: state={:?} speech={} seg={} cache={}",
                 state,
+                frame.vad_speech,
                 seg_frames,
-                if in_blank { " (blank)" } else { "" }
+                frame.vad_cache.len()
             );
         }
 
-        let open_th = (nf * OPEN_RATIO).max(ABS_MIN_OPEN);
-        let close_th = nf * CLOSE_RATIO;
-
         match state {
             State::Idle => {
-                // EMA 噪声底
-                nf = nf * (1.0 - NF_ALPHA) + rms * NF_ALPHA;
-
-                // 维护 pre-roll 环形 buffer
-                if preroll.len() >= PREROLL_FRAMES {
-                    preroll.pop_front();
-                }
-                let mut snap = [0i16; FRAME_MONO];
-                snap[..mono_n].copy_from_slice(frame);
-                preroll.push_back(snap);
-
-                if rms > open_th && has_storage && !in_blank {
+                if frame.vad_speech && has_storage {
                     let path = make_filename(tz_off_s);
-                    match WavWriter::create(&path) {
-                        Ok(mut w) => {
-                            log::info!(
-                                "VAD: OPEN segment → {} (rms={:.0} > open={:.0})",
-                                path,
-                                rms,
-                                open_th
-                            );
-                            // 把 pre-roll 全部冲进文件
-                            for prev_frame in preroll.drain(..) {
-                                let _ = w.write_samples(&prev_frame);
-                            }
-                            // 当前帧也写
-                            let _ = w.write_samples(frame);
-                            writer = Some(w);
-                            state = State::Recording;
-                            silence = 0;
-                            // 已写入帧数:pre-roll + 当前 = N+1
-                            seg_frames = (PREROLL_FRAMES as u32) + 1;
-                        }
-                        Err(e) => log::warn!("VAD: open WAV failed, stay Idle: {e:#}"),
+                    log::info!("AFE: OPEN {}", path);
+                    // 通知 finalizer 开文件 + 占位头(0 size,crash 也是合法 WAV)
+                    if let Err(e) = tx.send(FinalizerCmd::Begin { path: path.clone() }) {
+                        log::warn!("AFE: send Begin failed: {e}");
+                        continue;
                     }
-                } else if rms > open_th && !has_storage {
-                    // 没卡也至少打个标记,方便调阈值
-                    log::info!(
-                        "VAD: would-open (rms={:.0} > open={:.0}), no storage",
-                        rms,
-                        open_th
-                    );
+                    let mut s = SegBuf::new(path);
+                    // AFE 内置 pre-roll:vad_cache 是触发前缓存的音频
+                    if !frame.vad_cache.is_empty() {
+                        s.push(frame.vad_cache);
+                    }
+                    s.push(frame.data);
+                    s.flush_if_full(&tx);
+                    seg = Some(s);
+                    state = State::Recording;
+                    silence = 0;
+                    // cache 帧不算独立帧,只算当前这帧
+                    seg_frames = 1;
+                } else if frame.vad_speech && !has_storage {
+                    log::info!("AFE: would-open (speech, no storage)");
                 }
             }
             State::Recording => {
-                if let Some(w) = writer.as_mut() {
-                    let _ = w.write_samples(frame);
+                // 尾静音也照写,保留段末尾的呼吸/收尾,避免 ASR 看着像被截断。
+                if let Some(s) = seg.as_mut() {
+                    s.push(frame.data);
+                    s.flush_if_full(&tx);
                 }
                 seg_frames += 1;
 
-                if rms < close_th {
-                    silence += 1;
-                } else {
+                if frame.vad_speech {
                     silence = 0;
+                } else {
+                    silence += 1;
                 }
 
-                let stop_silence = silence >= HANGOVER_FRAMES;
-                let stop_max = seg_frames >= MAX_SEG_FRAMES;
-
-                if stop_silence || stop_max {
-                    if let Some(w) = writer.take() {
-                        let reason = if stop_max { "max" } else { "silence" };
+                if silence >= HANGOVER_FRAMES {
+                    if let Some(mut s) = seg.take() {
                         if seg_frames < MIN_SEG_FRAMES {
                             log::info!(
-                                "VAD: DISCARD short ({} frames < {}) {}",
+                                "AFE: DISCARD short ({} < {}) {}",
                                 seg_frames,
                                 MIN_SEG_FRAMES,
-                                w.path()
+                                s.path()
                             );
-                            let _ = w.discard();
+                            // 已经 Begin 过 → 让 finalizer 删文件
+                            let _ = tx.send(FinalizerCmd::Discard);
                         } else {
-                            let secs = seg_frames as f32 * FRAME_MONO as f32 / SAMPLE_RATE as f32;
+                            // fetch_chunksize=512 sample @ 16kHz = 32ms/frame ⇒ 31.25 fps
+                            let secs = seg_frames as f32 * fetch_chunk as f32 / SAMPLE_RATE as f32;
                             log::info!(
-                                "VAD: CLOSE {} ({} frames, {:.1}s, reason={})",
-                                w.path(),
+                                "AFE: CLOSE {} ({} frames, {:.1}s) → finalizer",
+                                s.path(),
                                 seg_frames,
                                 secs,
-                                reason
                             );
-                            // finalize 出错(写盘 / seek / flush) → 文件可能半写,直接清掉,
-                            // 避免留个 0 字节 header 孤儿在盘上
-                            let path_for_cleanup = w.path().to_string();
-                            if let Err(e) = w.finalize() {
-                                log::warn!("VAD: finalize failed, removing partial: {e:#}");
-                                let _ = fs::remove_file(&path_for_cleanup);
-                            }
+                            // 把残留的 buf 作为最后一个 chunk 发,然后 End
+                            s.flush(&tx);
+                            let _ = tx.send(FinalizerCmd::End);
                         }
                     }
                     state = State::Idle;
@@ -295,30 +435,18 @@ pub fn vad_record_loop(mut mic: Mic, has_storage: bool, tz_off_s: i64) -> ! {
     }
 }
 
-fn compute_rms(samples: &[i16]) -> f32 {
-    if samples.is_empty() {
-        return 0.0;
-    }
-    let mut sum_sq: u64 = 0;
-    for &s in samples {
-        let v = s as i32;
-        sum_sq += (v * v) as u64;
-    }
-    ((sum_sq / samples.len() as u64) as f64).sqrt() as f32
-}
-
 /// 等系统时间被同步(从 RTC 灌或 SNTP 拉),最多等 `timeout`。
 fn wait_for_clock(timeout: Duration) {
     let start = Instant::now();
     while start.elapsed() < timeout {
         if unix_secs().is_some() {
-            log::info!("VAD: system clock ready, recording with timestamps");
+            log::info!("AFE: system clock ready, recording with timestamps");
             return;
         }
-        std::thread::sleep(Duration::from_secs(1));
+        thread::sleep(Duration::from_secs(1));
     }
     log::warn!(
-        "VAD: clock not synced after {}s, recordings will use uptime-based names",
+        "AFE: clock not synced after {}s, recordings will use uptime-based names",
         timeout.as_secs()
     );
 }
@@ -345,63 +473,45 @@ fn make_filename(tz_off_s: i64) -> String {
 }
 
 // ============================================================================
-// WAV 写盘:开文件时占位 44 字节,关文件时 seek 回头补 RIFF/data 长度。
+// WAV 写盘:开文件时写合法的 0-data-size 头(crash 也是合法 WAV);关文件时
+// seek 回头补 RIFF/data 长度。
 // ============================================================================
 
-struct WavWriter {
-    file: File,
+/// fetch 线程侧的当前段累积器:每攒满 CHUNK_SAMPLES 就 send 给 finalizer,
+/// 段彻底结束(close)再 send End/Discard。fetch 完全不碰 SPIFFS。
+///
+/// SPIRAM_MALLOC_ALWAYSINTERNAL=4096 → buf 自动落 PSRAM,不挤内部 SRAM。
+struct SegBuf {
+    buf: Vec<i16>,
     path: String,
-    samples_written: u32,
 }
 
-impl WavWriter {
-    fn create(path: &str) -> std::io::Result<Self> {
-        let mut file = File::create(path)?;
-        // 写 data_size=0 的合法 WAV 头。finalize 会回填真实大小;
-        // 即使断电没等到 finalize,文件本身也是合法 WAV(只是 0 长度),
-        // 而不是 44 字节零头 + 孤儿 PCM(soundfile / PyAV 不认)。
-        file.write_all(&wav_header(0))?;
-        Ok(Self {
-            file,
-            path: path.to_string(),
-            samples_written: 0,
-        })
+impl SegBuf {
+    fn new(path: String) -> Self {
+        Self {
+            buf: Vec::with_capacity(CHUNK_SAMPLES),
+            path,
+        }
     }
 
-    fn write_samples(&mut self, samples: &[i16]) -> std::io::Result<()> {
-        // i16 LE → u8 切片;ESP32-S3 小端,直接 transmute
-        let bytes: &[u8] = unsafe {
-            core::slice::from_raw_parts(samples.as_ptr() as *const u8, samples.len() * 2)
-        };
-        self.file.write_all(bytes)?;
-        self.samples_written += samples.len() as u32;
-        Ok(())
+    fn push(&mut self, s: &[i16]) {
+        self.buf.extend_from_slice(s);
     }
 
-    fn finalize(mut self) -> std::io::Result<()> {
-        let data_size = self.samples_written * 2;
-        let hdr = wav_header(data_size);
-        self.file.seek(SeekFrom::Start(0))?;
-        self.file.write_all(&hdr)?;
-        self.file.flush()?;
-
-        // 推进内存 index,HTTP /api/recordings 直接读这里,不走 SPIFFS read_dir
-        let total_bytes = (data_size as u64) + 44;
-        let basename = self
-            .path
-            .rsplit_once('/')
-            .map(|(_, n)| n)
-            .unwrap_or(self.path.as_str())
-            .to_string();
-        index_push(basename, total_bytes);
-        Ok(())
+    /// buf 满了就 send 一次 Chunk 到 finalizer,buf 清空准备下一块。
+    /// channel 满会阻塞 fetch(背压),罕见情况:finalizer 在写上一个超大 chunk。
+    fn flush_if_full(&mut self, tx: &SyncSender<FinalizerCmd>) {
+        if self.buf.len() >= CHUNK_SAMPLES {
+            self.flush(tx);
+        }
     }
 
-    fn discard(self) -> std::io::Result<()> {
-        // file 在 self drop 时自动 close,然后 remove
-        let path = self.path.clone();
-        drop(self);
-        std::fs::remove_file(&path)
+    fn flush(&mut self, tx: &SyncSender<FinalizerCmd>) {
+        if self.buf.is_empty() {
+            return;
+        }
+        let chunk = std::mem::replace(&mut self.buf, Vec::with_capacity(CHUNK_SAMPLES));
+        let _ = tx.send(FinalizerCmd::Chunk { samples: chunk });
     }
 
     fn path(&self) -> &str {
