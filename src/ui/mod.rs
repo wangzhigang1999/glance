@@ -1150,25 +1150,17 @@ fn fmt_mb(bytes: u32) -> heapless::String<8> {
     s
 }
 
-/// 按 UTF-8 字符数截断,超长加 ".." 后缀。单次扫描 `char_indices`。
-/// (原实现 `chars().count()` 先走一遍再 enumerate 又走一遍,O(2n))
+/// 按 UTF-8 字符数截断,超长加 ".." 后缀。
 fn truncate_chars(src: &str, max_chars: usize) -> heapless::String<80> {
-    let keep = max_chars.saturating_sub(1);
-    let mut cut_at = 0usize;
-    for (n, (byte, _)) in src.char_indices().enumerate() {
-        if n == keep {
-            cut_at = byte;
-        }
-        if n == max_chars {
-            let mut out: heapless::String<80> = heapless::String::new();
-            let _ = out.push_str(&src[..cut_at]);
-            let _ = out.push_str("..");
-            return out;
-        }
-    }
-    // 没超出:原样输出
     let mut out: heapless::String<80> = heapless::String::new();
-    let _ = out.push_str(src);
+    if src.chars().count() <= max_chars {
+        let _ = out.push_str(src);
+    } else {
+        for c in src.chars().take(max_chars.saturating_sub(1)) {
+            let _ = out.push(c);
+        }
+        let _ = out.push_str("..");
+    }
     out
 }
 

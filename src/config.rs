@@ -67,12 +67,6 @@ const K_H_OFF_CC: &str = "h_off_cc";
 const K_TZ_OFF: &str = "tz_off";
 const K_SF_N: &str = "sf_n";
 
-// 旧 key(仅迁移读一次用,读到就当 seed;save 时不再写回,NVS 里会被静默保留)
-const K_LEGACY_CINT_OK: &str = "cint_ok";
-const K_LEGACY_AINT_OK: &str = "aint_ok";
-const K_LEGACY_CINT_ERR: &str = "cint_err";
-const K_LEGACY_AINT_ERR: &str = "aint_err";
-
 impl ConfigStore {
     pub fn new(partition: EspDefaultNvsPartition) -> Result<Self> {
         let nvs = EspNvs::new(partition, "cfg", true).context("open NVS namespace 'cfg'")?;
@@ -93,19 +87,10 @@ impl ConfigStore {
                 base.gh_token = s.into();
             }
         }
-        // 旧字段 → 新字段迁移:优先用新 key,否则拿旧 contrib/activity 的 ok/err 当 seed
         if let Ok(Some(v)) = self.nvs.get_u32(K_GH_OK) {
-            base.gh_refresh_s = v;
-        } else if let Ok(Some(v)) = self.nvs.get_u32(K_LEGACY_CINT_OK) {
-            base.gh_refresh_s = v;
-        } else if let Ok(Some(v)) = self.nvs.get_u32(K_LEGACY_AINT_OK) {
             base.gh_refresh_s = v;
         }
         if let Ok(Some(v)) = self.nvs.get_u32(K_GH_ERR) {
-            base.gh_err_s = v;
-        } else if let Ok(Some(v)) = self.nvs.get_u32(K_LEGACY_CINT_ERR) {
-            base.gh_err_s = v;
-        } else if let Ok(Some(v)) = self.nvs.get_u32(K_LEGACY_AINT_ERR) {
             base.gh_err_s = v;
         }
         if let Ok(Some(v)) = self.nvs.get_u32(K_SREFR) {

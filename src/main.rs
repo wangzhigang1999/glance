@@ -253,14 +253,18 @@ fn main() -> anyhow::Result<()> {
     let tick = Duration::from_millis(100);
 
     loop {
-        // 每 tick(100ms)只读会被"按钮判翻页"立即用到的小字段,不 clone String;
-        // 重字段(gh_user 等)挪到 `if due` 分支下面,频率降到 sensor_refresh_s(通常 5s)
-        let (refresh_period, auto_rotate, auto_rotate_period) = {
+        // 每 tick 一次性读出本轮要用的所有配置字段
+        let (refresh_period, auto_rotate, auto_rotate_period, tz_off, t_off, h_off) = {
             let c = config.read().unwrap();
+            copy_truncated(&mut state.gh_user, &c.gh_user);
+            state.gh_token_set = !c.gh_token.is_empty();
             (
                 Duration::from_secs(c.sensor_refresh_s as u64),
                 c.auto_rotate,
                 Duration::from_secs(c.auto_rotate_s as u64),
+                c.tz_off_s as i64,
+                c.temp_off_c,
+                c.humid_off_pct,
             )
         };
 
@@ -287,18 +291,6 @@ fn main() -> anyhow::Result<()> {
 
         let due = last_refresh.elapsed() >= refresh_period;
         if page_changed || due {
-            // 刷新周期才需要的慢路径字段:时区 / 传感器偏移 / gh_user 一次性读出
-            let (tz_off, t_off, h_off, cfg_token_set) = {
-                let c = config.read().unwrap();
-                copy_truncated(&mut state.gh_user, &c.gh_user);
-                (
-                    c.tz_off_s as i64,
-                    c.temp_off_c,
-                    c.humid_off_pct,
-                    !c.gh_token.is_empty(),
-                )
-            };
-            state.gh_token_set = cfg_token_set;
             if due {
                 n = n.saturating_add(1);
                 match sensor.read() {
@@ -549,18 +541,12 @@ fn try_connect_n(wifi: &mut WifiManager, creds: &WifiCreds, budget: u32) -> bool
     false
 }
 
-/// 把 `src` 按 UTF-8 字符边界尽量多地拷入 `dst`(不超 capacity),先 clear。
-/// 替换原先散落在主循环各处的 `for c in s.chars() { dst.push(c) }` 模式。
+/// 把 `src` 尽量多地拷入 `dst`(不超 capacity),先 clear。装不下的字符直接丢。
 fn copy_truncated<const N: usize>(dst: &mut heapless::String<N>, src: &str) {
     dst.clear();
-    let cap = dst.capacity();
-    let mut end = 0;
-    for (i, c) in src.char_indices() {
-        let next = i + c.len_utf8();
-        if next > cap {
+    for c in src.chars() {
+        if dst.push(c).is_err() {
             break;
         }
-        end = next;
     }
-    let _ = dst.push_str(&src[..end]);
 }
