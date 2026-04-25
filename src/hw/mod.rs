@@ -10,6 +10,7 @@ pub mod chip_temp;
 pub mod es7210;
 pub mod mic;
 pub mod rtc;
+pub mod sdcard;
 pub mod shtc3;
 pub mod storage;
 pub mod system;

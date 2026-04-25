@@ -51,6 +51,7 @@ use crate::{
         es7210::Es7210,
         mic::Mic,
         rtc::Rtc,
+        sdcard::Sdcard,
         shtc3::Shtc3,
         storage::Storage,
         system::{mac_suffix, read_flash_stats, read_sys_stats},
@@ -147,21 +148,34 @@ fn main() -> anyhow::Result<()> {
     )?;
     let i2c_bus: I2cBus = Arc::new(Mutex::new(i2c_drv));
 
-    // ---- 录音存储:走板内 12MB SPIFFS,挂在 /storage ----
-    // 真正想要的是 SD 卡,但板上 R7(CS 上拉)NC,SPI 模式起不来,先用 SPIFFS 凑合。
-    // 12MB ≈ 6 分钟 16kHz 单声道音频,Phase E 的 prune 会负责清最老的。
-    log::info!("Init internal SPIFFS partition for recordings");
-    let _storage = match Storage::mount() {
+    // ---- 录音存储:先试 SD 卡(SDMMC 1-bit 38/21/39),失败回退板内 SPIFFS ----
+    // 两路都挂在 /storage,recorder/HTTP 路径完全不变。
+    // SD 优先:容量大(GB 级 vs 12MB),掉电安全也好(FATFS 比 SPIFFS 鲁棒)。
+    log::info!("Init recording storage (SD first, SPIFFS fallback)");
+    let _sd: Option<Sdcard>;
+    let _storage: Option<Storage>;
+    match Sdcard::mount() {
         Ok(s) => {
-            // 启动时扫一次目录灌内存 index;之后 HTTP 全走 index,不再 read_dir
+            _sd = Some(s);
+            _storage = None;
             recorder::index_scan_storage();
-            Some(s)
         }
         Err(e) => {
-            log::warn!("SPIFFS mount failed (recording disabled): {e:#}");
-            None
+            log::warn!("SD mount failed ({e:#}), falling back to SPIFFS");
+            _sd = None;
+            _storage = match Storage::mount() {
+                Ok(s) => {
+                    recorder::index_scan_storage();
+                    Some(s)
+                }
+                Err(e) => {
+                    log::warn!("SPIFFS mount also failed (recording disabled): {e:#}");
+                    None
+                }
+            };
         }
-    };
+    }
+    let has_storage_backend = _sd.is_some() || _storage.is_some();
 
     // ---- SHTC3 ----
     log::info!("Init SHTC3 sensor (addr 0x70)");
@@ -181,7 +195,7 @@ fn main() -> anyhow::Result<()> {
     // 等 A3V3 稳了再发 I2C,免得首次写寄存器 NACK
     sleep(Duration::from_millis(50));
     let mut mic_codec = Es7210::new(i2c_bus.clone());
-    if let Err(e) = mic_codec.open_mic1() {
+    if let Err(e) = mic_codec.open_mic12() {
         log::warn!("ES7210 open failed (mic skeleton disabled): {e:#}");
     } else {
         match Mic::new(
@@ -199,7 +213,7 @@ fn main() -> anyhow::Result<()> {
                     if let Err(e) = mic_codec.enable() {
                         log::warn!("ES7210 enable failed (analog path off): {e:#}");
                     }
-                    let has_storage = _storage.is_some();
+                    let has_storage = has_storage_backend;
                     let tz_for_rec = config.read().unwrap().tz_off_s as i64;
                     std::thread::Builder::new()
                         .name("vad_rec".into())

@@ -5,8 +5,8 @@
 //! - `GET /api/recording?name=foo.wav` → 流式 WAV;支持 `Range: bytes=...` → 206
 //! - `DELETE /api/recording?name=foo.wav` → 删除
 //!
-//! 文件全部存在 SPIFFS 根 `/storage/`,平面命名空间;`is_safe_name` 拒绝
-//! 任何带斜杠 / 点开头 / 不以 .wav 结尾的请求,防止越权。
+//! 文件全部存在 `/storage/` 根(SD 或 SPIFFS,挂载点统一),平面命名空间;
+//! `is_safe_name` 拒绝任何带斜杠 / 点开头 / 不以 .wav 结尾的请求,防止越权。
 
 use std::{
     fs,
@@ -52,25 +52,23 @@ pub fn register(server: &mut EspHttpServer<'static>) -> Result<()> {
         },
     )?;
 
-    // ---- 批量删全部 = SPIFFS format(O(1) vs 逐文件 remove 的 O(N×慢)) + 清 index ----
+    // ---- 批量删全部:迭代 index 逐个 remove(SD/FATFS 和 SPIFFS 都走这条) ----
     server.fn_handler(
         "/api/recordings",
         Method::Delete,
         |req| -> Result<(), anyhow::Error> {
-            // 先快照一下当前数量给客户端看
-            let (_, total, _) = recorder::index_list_paged(0, 0);
+            let (entries, total, _) = recorder::index_list_paged(0, 0);
             // 内存 index 立刻清 → list 立刻显示空 → 视觉响应即时
             recorder::index_clear();
-            // 真正擦盘(几十毫秒)
-            if let Err(e) = crate::hw::storage::format() {
-                log::warn!("SPIFFS format failed during bulk delete: {e:#}");
-                let body = format!("{{\"ok\":false,\"error\":\"format failed: {e}\"}}");
-                let mut resp = req.into_status_response(500)?;
-                resp.write_all(body.as_bytes())?;
-                return Ok(());
+            let mut deleted = 0u32;
+            for e in &entries {
+                let path = format!("{REC_DIR}/{}", e.name);
+                if fs::remove_file(&path).is_ok() {
+                    deleted += 1;
+                }
             }
-            log::info!("bulk-deleted {total} recordings via SPIFFS format");
-            let body = format!("{{\"ok\":true,\"deleted\":{total}}}");
+            log::info!("bulk-deleted {deleted}/{total} recordings");
+            let body = format!("{{\"ok\":true,\"deleted\":{deleted},\"total\":{total}}}");
             let mut resp = req.into_ok_response()?;
             resp.write_all(body.as_bytes())?;
             Ok(())

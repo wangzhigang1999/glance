@@ -1,22 +1,20 @@
 //! 板内 SPIFFS 分区(12MB),挂在 `/storage` 下,std::fs 直接读写。
 //!
 //! 走 partitions.csv 里 0x410000 起的 `storage` 分区,**不需要任何 GPIO**。
-//! 之前的 SD 卡方案因为板上 R7(CS 上拉)默认 NC 跑不通,这是临时方案,
-//! 等补焊了 R7 把 sdcard.rs 找回来即可,上层 std::fs 调用一行不用动。
+//! **SD 卡是首选**([`Sdcard::mount`](super::sdcard::Sdcard::mount),容量 GB 级);
+//! 这条只在没插卡时兜底。同 `/storage` 路径,recorder 不感知差异。
 //!
 //! **使用注意**:
 //! - 总容量 12MB,16kHz × 单声道 × 16-bit PCM 算下来 ≈ **6 分钟**音频
 //! - SPIFFS 是平面 KV,**不支持真正的目录**;可以用 `/storage/recordings/foo.wav`
 //!   这种带斜杠的文件名,但 `mkdir` / `opendir` 跟你想的不一样
 //! - 文件名最长 64 字符(sdkconfig 调过)
-//! - 满了 `std::fs::write` 返回 `ENOSPC`,Phase E 的 prune 要负责清最老的
+//! - 满了 `std::fs::write` 返回 `ENOSPC`
 
 use std::ffi::CString;
 
 use anyhow::{Context, Result};
-use esp_idf_svc::sys::{
-    esp, esp_spiffs_format, esp_spiffs_info, esp_vfs_spiffs_conf_t, esp_vfs_spiffs_register,
-};
+use esp_idf_svc::sys::{esp, esp_spiffs_info, esp_vfs_spiffs_conf_t, esp_vfs_spiffs_register};
 
 pub const MOUNT_PATH: &str = "/storage";
 const PARTITION_LABEL: &str = "storage";
@@ -60,15 +58,6 @@ impl Storage {
     pub fn stats(&self) -> (usize, usize) {
         read_info(&self.label)
     }
-}
-
-/// 格式化 SPIFFS 分区(瞬秒回,远比逐文件 remove 快)。
-/// 需要分区已经 mount 好;esp_spiffs_format 内部会临时 unmount 再挂回。
-pub fn format() -> Result<()> {
-    let label = CString::new(PARTITION_LABEL).unwrap();
-    esp!(unsafe { esp_spiffs_format(label.as_ptr()) }).context("esp_spiffs_format")?;
-    log::info!("SPIFFS reformatted");
-    Ok(())
 }
 
 fn read_info(label: &CString) -> (usize, usize) {

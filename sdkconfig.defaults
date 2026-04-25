@@ -47,7 +47,14 @@ CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=3584
 # 现在走 SoftAP + HTTP 门户配网,不再需要 BLE 栈(省内部 SRAM ~30KB)
 CONFIG_BT_ENABLED=n
 
-# ===== SPIFFS(板内 12MB,临时录音存储) =====
+# ===== SPIFFS(板内 12MB,SD 失败时的 fallback) =====
 # 文件名要装得下 "recordings/20260425-143022-001.wav" = 32 字符,默认 32 卡边缘,
 # 留点余量到 64,方便后期加 .uploaded / .tmp 之类后缀
 CONFIG_SPIFFS_OBJ_NAME_LEN=64
+
+# ===== FATFS over SDMMC(SD 卡,首选录音存储) =====
+# WAV 文件名 "20260425-143022-001.wav" 23 字符,超过 8.3,必须开 LFN。
+# LFN_HEAP 把临时缓冲放堆里(不占线程栈),vad_rec 12K 栈才够用
+CONFIG_FATFS_LFN_HEAP=y
+# UTF-8 兼容(虽然录音名是纯 ASCII,但开 LFN 顺手开 UTF-8 不亏)
+CONFIG_FATFS_API_ENCODING_UTF_8=y
