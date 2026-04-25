@@ -9,52 +9,45 @@
 use std::{thread::sleep, time::Duration};
 
 use anyhow::{Context, Result};
-use esp_idf_svc::hal::{
-    gpio::{InputPin, OutputPin},
-    i2c::{I2c, I2cConfig, I2cDriver},
-    units::Hertz,
-};
+
+use super::I2cBus;
 
 const ADDR: u8 = 0x70;
 const CMD_WAKEUP: [u8; 2] = [0x35, 0x17];
 const CMD_MEASURE_TFIRST: [u8; 2] = [0x78, 0x66];
 const CMD_SLEEP: [u8; 2] = [0xB0, 0x98];
 
-pub struct Shtc3<'d> {
-    drv: I2cDriver<'d>,
+pub struct Shtc3 {
+    bus: I2cBus,
 }
 
-impl<'d> Shtc3<'d> {
-    pub fn new<I2C, Sda, Scl>(i2c: I2C, sda: Sda, scl: Scl) -> Result<Self>
-    where
-        I2C: I2c + 'd,
-        Sda: InputPin + OutputPin + 'd,
-        Scl: InputPin + OutputPin + 'd,
-    {
-        let cfg = I2cConfig::new().baudrate(Hertz(100_000));
-        let drv = I2cDriver::new(i2c, sda, scl, &cfg).context("i2c init")?;
-        Ok(Self { drv })
+impl Shtc3 {
+    pub fn new(bus: I2cBus) -> Self {
+        Self { bus }
     }
 
-    /// 返回 (温度°C, 湿度%)。内部完整 wakeup → measure → sleep。
+    /// 返回 (温度°C, 湿度%)。整段 wakeup→measure→read→sleep 持锁完成,
+    /// 避免被别的 I2C 设备的 transaction 切断后 SHTC3 自动回 sleep。
     pub fn read(&mut self) -> Result<(f32, f32)> {
-        self.drv.write(ADDR, &CMD_WAKEUP, 100).context("wakeup")?;
+        let mut drv = self.bus.lock().expect("i2c bus poisoned");
+
+        drv.write(ADDR, &CMD_WAKEUP, 100).context("wakeup")?;
         sleep(Duration::from_micros(240));
 
-        self.drv
-            .write(ADDR, &CMD_MEASURE_TFIRST, 100)
+        drv.write(ADDR, &CMD_MEASURE_TFIRST, 100)
             .context("measure cmd")?;
         sleep(Duration::from_millis(15));
 
         let mut buf = [0u8; 6];
-        self.drv.read(ADDR, &mut buf, 100).context("read raw")?;
+        drv.read(ADDR, &mut buf, 100).context("read raw")?;
+
+        let _ = drv.write(ADDR, &CMD_SLEEP, 100);
+        drop(drv);
 
         let t_raw = u16::from_be_bytes([buf[0], buf[1]]);
         let rh_raw = u16::from_be_bytes([buf[3], buf[4]]);
         let t_c = -45.0 + 175.0 * (t_raw as f32) / 65536.0;
         let rh = 100.0 * (rh_raw as f32) / 65536.0;
-
-        let _ = self.drv.write(ADDR, &CMD_SLEEP, 100);
         Ok((t_c, rh))
     }
 }

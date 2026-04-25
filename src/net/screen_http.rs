@@ -15,6 +15,7 @@
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
+        mpsc::RecvTimeoutError,
         Arc, Mutex,
     },
     time::Duration,
@@ -35,6 +36,7 @@ use crate::{
     display::framebuffer::{BUF_LEN, HEIGHT, WIDTH},
     net::{
         creds::{CredsStore, MAX_SLOTS as WIFI_MAX_SLOTS},
+        log_sink::LogHub,
         wifi::WifiCreds,
     },
 };
@@ -75,6 +77,7 @@ pub fn start(
     cfg: SharedConfig,
     store: Arc<ConfigStore>,
     creds: Arc<CredsStore>,
+    log_hub: Arc<LogHub>,
 ) -> Result<EspHttpServer<'static>> {
     let srv_cfg = Configuration {
         stack_size: 10 * 1024,
@@ -454,6 +457,66 @@ pub fn start(
         },
     )?;
 
+    // ---- GET /logs.html:简易日志查看页 ----
+    server.fn_handler(
+        "/logs.html",
+        Method::Get,
+        |req| -> Result<(), anyhow::Error> {
+            let mut resp = req.into_ok_response()?;
+            resp.write_all(LOGS_HTML.as_bytes())?;
+            Ok(())
+        },
+    )?;
+
+    // ---- GET /logs:Server-Sent Events,实时日志流 ----
+    // 长连接,每个 SSE client 占一个 httpd worker。客户端断开时本 handler write 报错退出,
+    // 同步 channel 在 Drop 后下次广播自动从订阅列表里剔除。
+    let hub_for_logs = log_hub.clone();
+    server.fn_handler(
+        "/logs",
+        Method::Get,
+        move |req| -> Result<(), anyhow::Error> {
+            let headers = [
+                ("content-type", "text/event-stream; charset=utf-8"),
+                ("cache-control", "no-store"),
+                ("x-accel-buffering", "no"),
+                // 即时禁用 keepalive,断了好让浏览器 EventSource 自动重连
+                ("connection", "close"),
+            ];
+            let mut resp = req.into_response(200, Some("OK"), &headers)?;
+
+            // 1) 重放 history,新连接进来先看到上下文
+            let snapshot = hub_for_logs.snapshot();
+            for line in &snapshot {
+                if write_sse_event(&mut resp, line).is_err() {
+                    return Ok(());
+                }
+            }
+            // 标记历史段结束,前端可在此清理 spinner
+            let _ = resp.write_all(b"event: ready\ndata: \n\n");
+
+            // 2) 实时订阅
+            let rx = hub_for_logs.subscribe();
+            loop {
+                match rx.recv_timeout(Duration::from_secs(15)) {
+                    Ok(line) => {
+                        if write_sse_event(&mut resp, &line).is_err() {
+                            break;
+                        }
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        // SSE 注释行做 keepalive,顺便用来探测客户端是否还在
+                        if resp.write_all(b": ping\n\n").is_err() {
+                            break;
+                        }
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            Ok(())
+        },
+    )?;
+
     // ---- POST /api/reboot ----
     server.fn_handler(
         "/api/reboot",
@@ -474,9 +537,33 @@ pub fn start(
     )?;
 
     log::info!(
-        "Screen HTTP server up on http://<ip>/  (/, /settings, /screen.bmp, /next, /api/config, /api/wifi{{,/remove}}, /api/wifi_forget, /api/reboot)"
+        "Screen HTTP server up on http://<ip>/  (/, /settings, /logs.html, /logs, /screen.bmp, /next, /api/config, /api/wifi{{,/remove}}, /api/wifi_forget, /api/reboot)"
     );
     Ok(server)
+}
+
+/// 把一行日志写成 SSE `data:` 事件。`line` 里若含 `\n`,按 SSE 规范逐行 prefix。
+fn write_sse_event<W: esp_idf_svc::io::Write>(
+    resp: &mut W,
+    line: &str,
+) -> Result<(), <W as esp_idf_svc::io::ErrorType>::Error> {
+    // 多行支持:按 SSE,每条 \n 都要再来一行 "data: "
+    // 简化路径:绝大多数 log 是单行
+    if !line.contains('\n') {
+        resp.write_all(b"data: ")?;
+        resp.write_all(line.as_bytes())?;
+        resp.write_all(b"\n\n")?;
+        return Ok(());
+    }
+    for (i, seg) in line.split('\n').enumerate() {
+        if i > 0 {
+            resp.write_all(b"\n")?;
+        }
+        resp.write_all(b"data: ")?;
+        resp.write_all(seg.as_bytes())?;
+    }
+    resp.write_all(b"\n\n")?;
+    Ok(())
 }
 
 /// 用 token 调用 `GET https://api.github.com/user`,取 `login`
@@ -621,6 +708,7 @@ fn apply_json_patch(c: &mut crate::config::RuntimeConfig, body: &str) {
 }
 
 const SETTINGS_HTML: &str = include_str!("../../web/settings.html");
+const LOGS_HTML: &str = include_str!("../../web/logs.html");
 
 /// 把 ST7305 本地 fb 编码成标准 1-bit BMP。
 fn encode_bmp(fb: &[u8]) -> Vec<u8> {

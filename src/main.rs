@@ -32,7 +32,9 @@ use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::{
         gpio::{AnyIOPin, AnyOutputPin},
+        i2c::{I2cConfig, I2cDriver},
         peripherals::Peripherals,
+        units::Hertz,
     },
     nvs::EspDefaultNvsPartition,
     sys::link_patches,
@@ -45,13 +47,16 @@ use crate::{
         battery::{Battery, PowerSource},
         button::Button,
         chip_temp::ChipTemp,
+        es7210::Es7210,
+        mic::Mic,
         shtc3::Shtc3,
         system::{mac_suffix, read_flash_stats, read_sys_stats},
+        I2cBus,
     },
     net::{
         activity::Activity, format_local_date, format_local_hms, gh_worker, github::ContribData,
-        notifications::NotifSummary, screen_http, CredsStore, Provisioner, Sntp, WifiCreds,
-        WifiManager,
+        log_sink, notifications::NotifSummary, screen_http, CredsStore, Provisioner, Sntp,
+        WifiCreds, WifiManager,
     },
     ui::{AppState, Page},
 };
@@ -70,7 +75,7 @@ const WIFI_RETRY_BUDGET: u32 = 3;
 
 fn main() -> anyhow::Result<()> {
     link_patches();
-    esp_idf_svc::log::EspLogger::initialize_default();
+    let log_hub = log_sink::install();
 
     log::info!("=== ESP32-S3-RLCD-4.2 ===");
 
@@ -128,13 +133,56 @@ fn main() -> anyhow::Result<()> {
     let _ = ui::render(&mut display, &state, Page::Dashboard);
     display.flush()?;
 
-    // ---- SHTC3 ----
-    log::info!("Init SHTC3 sensor (I2C SDA=13 SCL=14)");
-    let mut sensor = Shtc3::new(
+    // ---- 共享 I2C0(SDA13/SCL14):SHTC3 / ES7210 / ES8311 / PCF85063 都挂这条 ----
+    log::info!("Init shared I2C0 bus (SDA=13 SCL=14 @100kHz)");
+    let i2c_cfg = I2cConfig::new().baudrate(Hertz(100_000));
+    let i2c_drv = I2cDriver::new(
         peripherals.i2c0,
         peripherals.pins.gpio13,
         peripherals.pins.gpio14,
+        &i2c_cfg,
     )?;
+    let i2c_bus: I2cBus = Arc::new(Mutex::new(i2c_drv));
+
+    // ---- SHTC3 ----
+    log::info!("Init SHTC3 sensor (addr 0x70)");
+    let mut sensor = Shtc3::new(i2c_bus.clone());
+
+    // ---- ES7210 + I2S MIC(骨架:MIC1 / 16kHz / 16-bit / mono)----
+    // 等 A3V3 稳了再发 I2C,免得首次写寄存器 NACK
+    sleep(Duration::from_millis(50));
+    let mut mic_codec = Es7210::new(i2c_bus.clone());
+    if let Err(e) = mic_codec.open_mic1() {
+        log::warn!("ES7210 open failed (mic skeleton disabled): {e:#}");
+    } else {
+        match Mic::new(
+            peripherals.i2s0,
+            peripherals.pins.gpio16,
+            peripherals.pins.gpio9,
+            peripherals.pins.gpio45,
+            peripherals.pins.gpio10,
+        ) {
+            Ok(mut mic) => match mic.start() {
+                Err(e) => log::warn!("Mic start failed: {e:#}"),
+                Ok(()) => {
+                    // 给 I2S MCLK 几个 ms 稳定后再让 ES7210 上电模拟通路
+                    sleep(Duration::from_millis(10));
+                    if let Err(e) = mic_codec.enable() {
+                        log::warn!("ES7210 enable failed (analog path off): {e:#}");
+                    }
+                    std::thread::Builder::new()
+                        .name("mic_rms".into())
+                        // 8K:loop 里 log::info!("MIC RMS=...") 会过 log_sink 的 format!,
+                        // fmt 机器一把吃 1-2KB,4K 顶不住会爆栈
+                        .stack_size(8192)
+                        .spawn(move || mic_rms_loop(mic))
+                        .map(|_| ())
+                        .unwrap_or_else(|e| log::warn!("spawn mic_rms thread failed: {e:#}"));
+                }
+            },
+            Err(e) => log::warn!("Mic init failed: {e:#}"),
+        }
+    }
 
     // ---- Battery ADC(GPIO4)----
     log::info!("Init battery ADC on GPIO4");
@@ -222,6 +270,7 @@ fn main() -> anyhow::Result<()> {
         config.clone(),
         config_store.clone(),
         creds_store.clone(),
+        log_hub.clone(),
     ) {
         Ok(s) => Some(s),
         Err(e) => {
@@ -539,6 +588,39 @@ fn try_connect_n(wifi: &mut WifiManager, creds: &WifiCreds, budget: u32) -> bool
         }
     }
     false
+}
+
+/// 麦克风骨架验证 loop:每帧 1024 个 i16(stereo,L=R=MIC1),约 32ms 一帧。
+/// 算 left 声道 RMS,每秒打一行日志——对着麦克风讲话能看到数字明显涨。
+fn mic_rms_loop(mut mic: Mic) -> ! {
+    let mut buf = [0i16; 1024];
+    let mut frame_n: u32 = 0;
+    let mut acc_sq: u64 = 0;
+    let mut acc_n: u64 = 0;
+    loop {
+        match mic.read(&mut buf, 1000) {
+            Ok(n) => {
+                // stereo,左声道在偶数 idx
+                for s in buf[..n].iter().step_by(2) {
+                    let v = *s as i32;
+                    acc_sq += (v * v) as u64;
+                    acc_n += 1;
+                }
+                frame_n += 1;
+                // 16kHz / (1024/2) ≈ 31 帧/秒
+                if frame_n % 31 == 0 && acc_n > 0 {
+                    let rms = ((acc_sq / acc_n) as f64).sqrt() as u32;
+                    log::info!("MIC RMS={rms} (n_frames={frame_n})");
+                    acc_sq = 0;
+                    acc_n = 0;
+                }
+            }
+            Err(e) => {
+                log::error!("mic read error: {e:#}");
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+    }
 }
 
 /// 把 `src` 尽量多地拷入 `dst`(不超 capacity),先 clear。装不下的字符直接丢。

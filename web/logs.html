@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en" class="h-full">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <title>Curiosity Lab · Logs</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            rel="stylesheet"
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        />
+        <link
+            rel="stylesheet"
+            href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"
+            crossorigin="anonymous"
+            referrerpolicy="no-referrer"
+        />
+        <script src="https://cdn.tailwindcss.com"></script>
+        <script>
+            tailwind.config = {
+                darkMode: "media",
+                theme: {
+                    extend: {
+                        colors: {
+                            paper: { DEFAULT: "#f8f7f4", dark: "#12100b" },
+                            ink: { DEFAULT: "#252119", dark: "#efeee9" },
+                            line: { DEFAULT: "#dcd9cf", dark: "#36322a" },
+                            card: { DEFAULT: "#ffffff", dark: "#1c1911" },
+                            accent: "#bc3908",
+                        },
+                        fontFamily: {
+                            sans: ["Inter", "system-ui", "sans-serif"],
+                            mono: [
+                                '"JetBrains Mono"',
+                                "ui-monospace",
+                                "Consolas",
+                                "monospace",
+                            ],
+                        },
+                    },
+                },
+            };
+        </script>
+        <style type="text/tailwindcss">
+            @layer components {
+                .btn {
+                    @apply inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-line dark:border-line-dark text-sm hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer whitespace-nowrap;
+                }
+                .sel {
+                    @apply px-2.5 py-1.5 rounded-md border border-line dark:border-line-dark bg-transparent text-sm cursor-pointer;
+                }
+                .inp {
+                    @apply px-2.5 py-1.5 rounded-md border border-line dark:border-line-dark bg-transparent text-sm w-44 focus:outline-none focus:ring-2 focus:ring-accent/40;
+                }
+            }
+        </style>
+        <style>
+            #log {
+                font-family: "JetBrains Mono", ui-monospace, Consolas, monospace;
+                font-size: 12px;
+                line-height: 1.5;
+            }
+            #log .row {
+                white-space: pre-wrap;
+                word-break: break-word;
+                padding: 0 12px;
+            }
+            #log .row.E {
+                color: #ef4444;
+            }
+            #log .row.W {
+                color: #f59e0b;
+            }
+            #log .row.I {
+                color: #10b981;
+            }
+            #log .row.D {
+                color: #6b7280;
+            }
+            #log .row.V {
+                color: #6b7280;
+                opacity: 0.7;
+            }
+            #log .row.hide {
+                display: none;
+            }
+            #log .row mark {
+                background: #fde68a;
+                color: #111;
+                padding: 0 1px;
+                border-radius: 2px;
+            }
+            .dot-pulse {
+                animation: dp 1.8s ease-in-out infinite;
+            }
+            @keyframes dp {
+                0%,
+                100% {
+                    opacity: 1;
+                }
+                50% {
+                    opacity: 0.4;
+                }
+            }
+        </style>
+    </head>
+    <body
+        class="flex flex-col bg-paper dark:bg-paper-dark text-ink dark:text-ink-dark font-sans antialiased"
+        style="height: 100dvh"
+    >
+        <header
+            class="flex items-center gap-3 px-3 sm:px-5 py-2 border-b border-line dark:border-line-dark shrink-0 min-w-0"
+        >
+            <a
+                href="/"
+                class="flex items-center gap-2 min-w-0 hover:opacity-80"
+                title="Home"
+            >
+                <i class="fa-solid fa-microchip text-accent shrink-0"></i>
+                <span class="font-semibold tracking-tight truncate text-sm sm:text-base">
+                    Curiosity Lab
+                </span>
+            </a>
+            <span class="text-ink/30 dark:text-ink-dark/30">/</span>
+            <span class="text-sm font-medium">Logs</span>
+            <span
+                id="dot"
+                class="dot-pulse w-2 h-2 rounded-full bg-amber-500 shrink-0 ml-1"
+                aria-hidden="true"
+            ></span>
+            <span
+                id="dotTxt"
+                class="text-[11px] font-mono text-ink/60 dark:text-ink-dark/60"
+                >connecting</span
+            >
+            <div
+                class="ml-auto flex items-center gap-3 font-mono text-[11px] sm:text-xs text-ink/60 dark:text-ink-dark/60"
+            >
+                <span><b id="cnt">0</b> lines</span>
+                <span class="hidden sm:inline">•</span>
+                <span class="hidden sm:inline"
+                    >shown <b id="shown">0</b></span
+                >
+            </div>
+        </header>
+
+        <div
+            class="flex items-center gap-2 px-3 sm:px-5 py-2 border-b border-line dark:border-line-dark shrink-0 overflow-x-auto"
+        >
+            <button id="pause" class="btn">
+                <i class="fa-solid fa-pause" id="pIcon"></i>
+                <span id="pTxt">Pause</span>
+            </button>
+            <button id="clear" class="btn">
+                <i class="fa-solid fa-trash"></i>
+                <span>Clear</span>
+            </button>
+            <label
+                class="btn select-none"
+                title="Auto-scroll to latest"
+            >
+                <input
+                    id="auto"
+                    type="checkbox"
+                    checked
+                    class="accent-accent"
+                />
+                <span>Auto-scroll</span>
+            </label>
+            <span class="w-px h-5 bg-line dark:bg-line-dark mx-1 shrink-0"></span>
+            <select id="lvl" class="sel" title="Level filter">
+                <option value="V">All</option>
+                <option value="D">Debug+</option>
+                <option value="I" selected>Info+</option>
+                <option value="W">Warn+</option>
+                <option value="E">Error</option>
+            </select>
+            <input
+                id="q"
+                class="inp"
+                placeholder="filter..."
+                autocomplete="off"
+                spellcheck="false"
+            />
+            <a
+                href="/"
+                class="btn ml-auto shrink-0"
+                aria-label="Back to home"
+            >
+                <i class="fa-solid fa-arrow-left"></i>
+                <span class="hidden sm:inline">Home</span>
+            </a>
+        </div>
+
+        <main id="log" class="flex-1 min-h-0 overflow-y-auto py-2"></main>
+
+        <script>
+            (() => {
+                const $ = (id) => document.getElementById(id);
+                const log = $("log"),
+                    dot = $("dot"),
+                    dotTxt = $("dotTxt"),
+                    cnt = $("cnt"),
+                    shownEl = $("shown"),
+                    pause = $("pause"),
+                    pIcon = $("pIcon"),
+                    pTxt = $("pTxt"),
+                    clearBtn = $("clear"),
+                    autoBox = $("auto"),
+                    lvlSel = $("lvl"),
+                    q = $("q");
+
+                const LVL_ORDER = { E: 0, W: 1, I: 2, D: 3, V: 4 };
+                const MAX_ROWS = 2000;
+
+                let paused = false;
+                let total = 0;
+                let buffered = []; // 暂停时挂起的行
+
+                function setStatus(kind, txt) {
+                    dot.className =
+                        "dot-pulse w-2 h-2 rounded-full shrink-0 ml-1 " +
+                        ({
+                            ok: "bg-emerald-500",
+                            err: "bg-accent",
+                            idle: "bg-amber-500",
+                        }[kind] || "bg-amber-500");
+                    if (kind !== "ok") dot.classList.remove("dot-pulse");
+                    else dot.classList.add("dot-pulse");
+                    dotTxt.textContent = txt || kind;
+                }
+
+                function detectLevel(line) {
+                    // 匹配 "<ts spaces><CHAR> ..."
+                    const m = line.match(/^\s*\d+\s+([EWIDV])\s/);
+                    return m ? m[1] : "I";
+                }
+
+                function passFilter(row) {
+                    const minLvl = LVL_ORDER[lvlSel.value] ?? 4;
+                    const rowLvl = LVL_ORDER[row.dataset.lvl] ?? 4;
+                    if (rowLvl > minLvl) return false;
+                    const needle = q.value.trim().toLowerCase();
+                    if (!needle) return true;
+                    return row.textContent.toLowerCase().includes(needle);
+                }
+
+                function append(line) {
+                    const lvl = detectLevel(line);
+                    const row = document.createElement("div");
+                    row.className = "row " + lvl;
+                    row.dataset.lvl = lvl;
+                    row.textContent = line;
+                    if (!passFilter(row)) row.classList.add("hide");
+                    log.appendChild(row);
+                    total++;
+                    // 修剪超额
+                    while (log.childElementCount > MAX_ROWS) {
+                        log.removeChild(log.firstElementChild);
+                    }
+                }
+
+                function flushBuffered() {
+                    if (!buffered.length) return;
+                    for (const l of buffered) append(l);
+                    buffered = [];
+                }
+
+                function refreshCounters() {
+                    cnt.textContent = total;
+                    shownEl.textContent = log.querySelectorAll(
+                        ".row:not(.hide)",
+                    ).length;
+                }
+
+                function reapplyFilter() {
+                    for (const row of log.children) {
+                        if (passFilter(row)) row.classList.remove("hide");
+                        else row.classList.add("hide");
+                    }
+                    refreshCounters();
+                }
+
+                function scrollToBottom() {
+                    if (autoBox.checked) log.scrollTop = log.scrollHeight;
+                }
+
+                let es;
+                function connect() {
+                    setStatus("idle", "connecting");
+                    es = new EventSource("/logs");
+                    es.onmessage = (e) => {
+                        if (paused) {
+                            buffered.push(e.data);
+                            // 防内存爆,暂停期间也限量
+                            if (buffered.length > MAX_ROWS)
+                                buffered.splice(
+                                    0,
+                                    buffered.length - MAX_ROWS,
+                                );
+                            return;
+                        }
+                        append(e.data);
+                        refreshCounters();
+                        scrollToBottom();
+                    };
+                    es.addEventListener("ready", () => {
+                        setStatus("ok", "live");
+                        scrollToBottom();
+                    });
+                    es.onerror = () => {
+                        setStatus("err", "reconnecting...");
+                        // EventSource 自带重连;这里只更新状态
+                    };
+                    es.onopen = () => setStatus("ok", "live");
+                }
+
+                pause.onclick = () => {
+                    paused = !paused;
+                    pIcon.className = paused
+                        ? "fa-solid fa-play"
+                        : "fa-solid fa-pause";
+                    pTxt.textContent = paused ? "Resume" : "Pause";
+                    if (!paused) {
+                        flushBuffered();
+                        refreshCounters();
+                        scrollToBottom();
+                    }
+                };
+                clearBtn.onclick = () => {
+                    log.replaceChildren();
+                    total = 0;
+                    refreshCounters();
+                };
+                lvlSel.onchange = reapplyFilter;
+                q.oninput = reapplyFilter;
+
+                addEventListener("keydown", (e) => {
+                    if (
+                        ["INPUT", "SELECT", "TEXTAREA"].includes(
+                            e.target.tagName,
+                        )
+                    )
+                        return;
+                    if (e.code === "Space") {
+                        e.preventDefault();
+                        pause.click();
+                    } else if (e.code === "KeyK") {
+                        e.preventDefault();
+                        clearBtn.click();
+                    } else if (e.code === "Slash") {
+                        e.preventDefault();
+                        q.focus();
+                    }
+                });
+
+                connect();
+            })();
+        </script>
+    </body>
+</html>
