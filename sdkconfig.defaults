@@ -19,7 +19,10 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_BOOT_INIT=y
-CONFIG_SPIRAM_IGNORE_NOTFOUND=n
+# 注:必须开 IGNORE_NOTFOUND=y 才能解锁 ESP_WIFI_DYNAMIC_TX_BUFFER 选项
+# (esp_wifi/Kconfig: dynamic depends on !(SPIRAM_TRY_ALLOCATE_WIFI_LWIP && !SPIRAM_IGNORE_NOTFOUND))
+# N16R8 板子物理焊死 PSRAM,永远检得到,这条对启动逻辑无副作用。
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
 CONFIG_SPIRAM_USE_MALLOC=y
 # 默认分配阈值:<4KB 留在内部 SRAM,≥4KB 尝试落 PSRAM
 # (原值 16384 太保守,内部 SRAM 快爆;PSRAM 8MB 基本闲置)
@@ -46,6 +49,28 @@ CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=3584
 # ===== BT 关掉 =====
 # 现在走 SoftAP + HTTP 门户配网,不再需要 BLE 栈(省内部 SRAM ~30KB)
 CONFIG_BT_ENABLED=n
+
+# ===== mbedtls 内存优化(GitHub 三 worker 频繁握手,内部 SRAM 紧张) =====
+# 动态 SSL buffer:握手期分配,完成后立即缩到实际 record 大小。默认是预分配
+# 16KB 的 IN/OUT,常驻啃内部 SRAM。开了之后稳态占用降到几 KB。
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+# 握手完释放对端 cert chain(GitHub 链 ~3-5KB)。我们只读响应,不需要保留。
+CONFIG_MBEDTLS_DYNAMIC_FREE_PEER_CERT=y
+# 同上,释放本地 CA bundle 副本(crt_bundle_attach 已经把根证内嵌只读 flash)
+CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
+
+# ===== Wi-Fi 缓冲挪 PSRAM(实测内部 SRAM heap_min_ever 跌到 2.8KB) =====
+# TX buffer 默认 static(钉死内部 SRAM 16×1600B=25.6KB,PSRAM 启用时强制 static);
+# 改 dynamic 后配合 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y 走 PSRAM。
+# 注意:Kconfig choice 关 bool 必须用 "is not set" 注释式,=n 是无效语法被丢弃。
+# CONFIG_ESP_WIFI_STATIC_TX_BUFFER is not set
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER=y
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=32
+# RX buffer 必须 DMA-capable(WiFi MAC 硬件 DMA 进来),只能留内部;但 16 给
+# 不跑下载的屏幕固件太多,降到 10(省 9.6KB)。如果出现丢包再加回来。
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
+# Block Ack 窗口 16→8:吞吐影响小(我们只做小 JSON GET),省内部缓冲。
+CONFIG_ESP_WIFI_RX_BA_WIN=8
 
 # ===== SPIFFS(板内 12MB,SD 失败时的 fallback) =====
 # 文件名要装得下 "recordings/20260425-143022-001.wav" = 32 字符,默认 32 卡边缘,

@@ -16,8 +16,12 @@
 //! 颜色语义(embedded-graphics):
 //! - `BinaryColor::On`  → 前景(黑),bit 置 0
 //! - `BinaryColor::Off` → 背景(白),bit 置 1
+//!
+//! 内存放置:`heap_caps_malloc(MALLOC_CAP_DMA)`,确保 SPI master 直送 DMA,
+//! 否则 IDF 会在内部 SRAM 临时拷一份(15KB)→ 高频出现 setup_dma_priv_buffer 失败。
 
 use embedded_graphics::pixelcolor::BinaryColor;
+use esp_idf_svc::sys::{heap_caps_free, heap_caps_malloc, MALLOC_CAP_DMA};
 
 /// 逻辑横屏宽度(px)
 pub const WIDTH: u16 = 400;
@@ -29,23 +33,34 @@ pub const BUF_LEN: usize = (WIDTH as usize / 2) * (HEIGHT as usize / 4); // 15_0
 const H4: usize = HEIGHT as usize / 4; // 75
 
 pub struct FrameBuffer {
-    buf: Box<[u8; BUF_LEN]>,
+    ptr: *mut u8,
 }
+
+// 单线程独占使用,但显式声明便于上层结构跨线程移交所有权。
+unsafe impl Send for FrameBuffer {}
 
 impl FrameBuffer {
     pub fn new() -> Self {
-        let v: Vec<u8> = vec![0xFF; BUF_LEN];
-        let boxed: Box<[u8; BUF_LEN]> = v.into_boxed_slice().try_into().expect("BUF_LEN mismatch");
-        Self { buf: boxed }
+        let ptr = unsafe { heap_caps_malloc(BUF_LEN, MALLOC_CAP_DMA) as *mut u8 };
+        assert!(
+            !ptr.is_null(),
+            "framebuffer: heap_caps_malloc(DMA, 15000) failed"
+        );
+        unsafe { core::ptr::write_bytes(ptr, 0xFF, BUF_LEN) };
+        Self { ptr }
     }
 
     pub fn raw(&self) -> &[u8] {
-        &self.buf[..]
+        unsafe { core::slice::from_raw_parts(self.ptr, BUF_LEN) }
+    }
+
+    fn raw_mut(&mut self) -> &mut [u8] {
+        unsafe { core::slice::from_raw_parts_mut(self.ptr, BUF_LEN) }
     }
 
     pub fn fill(&mut self, color: BinaryColor) {
         let byte = if color.is_on() { 0x00 } else { 0xFF };
-        self.buf.as_mut().fill(byte);
+        unsafe { core::ptr::write_bytes(self.ptr, byte, BUF_LEN) };
     }
 
     #[inline]
@@ -54,11 +69,19 @@ impl FrameBuffer {
             return;
         }
         let (index, mask) = pixel_index_mask(x, y);
-        let byte = unsafe { self.buf.as_mut().get_unchecked_mut(index) };
+        let byte = unsafe { self.raw_mut().get_unchecked_mut(index) };
         if color.is_on() {
             *byte &= !mask;
         } else {
             *byte |= mask;
+        }
+    }
+}
+
+impl Drop for FrameBuffer {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe { heap_caps_free(self.ptr as *mut _) };
         }
     }
 }

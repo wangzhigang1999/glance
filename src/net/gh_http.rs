@@ -25,11 +25,14 @@ const ACCEPT: &str = "application/vnd.github+json";
 /// - `token` 为 `Some(..)` 则挂 `Authorization: Bearer ..`
 /// - `body` 为 `Some(..)` 则走 POST + `Content-Type: application/json`,否则 GET
 pub fn gh_request(url: &str, token: Option<&str>, body: Option<&[u8]>) -> Result<Vec<u8>> {
+    // GitHub TLS 1.3 cert chain + headers 经常 >4KB,buffer_size 太小会触发
+    // mbedtls 内部分次申请,内部 SRAM 紧张时直接 -0x7F00(SSL_ALLOC_FAILED)。
+    // 调大单缓冲一次性接住整个握手,减少分配次数。
     let config = Configuration {
         crt_bundle_attach: Some(esp_idf_svc::sys::esp_crt_bundle_attach),
         timeout: Some(Duration::from_secs(20)),
-        buffer_size: Some(4096),
-        buffer_size_tx: Some(if body.is_some() { 2048 } else { 1024 }),
+        buffer_size: Some(8192),
+        buffer_size_tx: Some(2048),
         ..Default::default()
     };
     let mut conn = EspHttpConnection::new(&config)?;
