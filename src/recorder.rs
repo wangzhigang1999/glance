@@ -114,11 +114,17 @@ const SAMPLE_RATE: u32 = 16_000;
 // ----- 帧时间换算(AFE_TYPE_SR/HIGH_PERF 的 chunk 是 256 sample = 16ms;实际从 Afe 取) -----
 // 下面的"frames"全部按 fetch 帧数算
 
-/// 录音过程中允许的尾静音(AFE 已经有 2s min_noise 内部去抖,这里再延 ~1s 给收尾)。
-/// 总尾部容忍 ≈ 3s,自然换气 / 思考 / 找词 都不会出戏。
-const HANGOVER_FRAMES: u32 = 60;
-/// 段太短直接 discard,认作误触发(< ~512ms,通常是关门/咳嗽)。
+/// 录音过程中允许的尾静音(AFE 已经有 2s min_noise 内部去抖,上层再叠 ~1s 收尾)。
+/// 总尾部 ≈ 3s,自然换气/思考/找词都够。之前设 60 帧(~1.9s)是想宽一点,但叠
+/// 上 AFE 的 2s 一共 4s,误触发段后面 ~4s 全是底噪,文件听着就是纯噪音。
+const HANGOVER_FRAMES: u32 = 30;
+/// 段太短直接 discard,认作误触发(< ~1s,通常是关门/咳嗽)。
 const MIN_SEG_FRAMES: u32 = 32;
+/// 段结束时的能量闸刀:整段单帧 RMS 的最大值低于这个就 Discard。
+/// 32ms 帧的 i16 RMS 单位。典型人声 ≥ 2000(说话时声门振动),纯底噪 < 500。
+/// 800 是中间值留点余量,CLOSE 日志会打 max_rms 方便回头调。
+/// 这是真正能识别"全段都是底噪"的最后一道关 —— VAD 看不出来的 tail 它能看出来。
+const RMS_DISCARD_THRESHOLD: u32 = 800;
 
 /// 流式 chunk 阈值:fetch 攒够这么多 i16 就 send 给 finalizer 落盘。
 /// 256KB ≈ 8s 音频(单声道 16kHz × 2 byte = 32KB/s)。给 finalizer 的 channel
@@ -403,25 +409,31 @@ fn fetch_loop(afe: Arc<Afe>, has_storage: bool, tz_off_s: i64, tx: SyncSender<Fi
 
                 if silence >= HANGOVER_FRAMES {
                     if let Some(mut s) = seg.take() {
-                        if seg_frames < MIN_SEG_FRAMES {
+                        let max_rms = s.max_rms();
+                        let too_short = seg_frames < MIN_SEG_FRAMES;
+                        let too_quiet = max_rms < RMS_DISCARD_THRESHOLD;
+                        if too_short || too_quiet {
+                            // VAD 看不出来的"全段都是底噪"在这里被 RMS 闸刀兜住:
+                            // 误触发后强制录的 ~3s tail 里没有人声能量,max_rms 通常 < 500
+                            let reason = if too_short { "short" } else { "quiet" };
                             log::info!(
-                                "AFE: DISCARD short ({} < {}) {}",
+                                "AFE: DISCARD {} ({} frames, max_rms={}) {}",
+                                reason,
                                 seg_frames,
-                                MIN_SEG_FRAMES,
+                                max_rms,
                                 s.path()
                             );
-                            // 已经 Begin 过 → 让 finalizer 删文件
                             let _ = tx.send(FinalizerCmd::Discard);
                         } else {
                             // fetch_chunksize=512 sample @ 16kHz = 32ms/frame ⇒ 31.25 fps
                             let secs = seg_frames as f32 * fetch_chunk as f32 / SAMPLE_RATE as f32;
                             log::info!(
-                                "AFE: CLOSE {} ({} frames, {:.1}s) → finalizer",
+                                "AFE: CLOSE {} ({} frames, {:.1}s, max_rms={}) → finalizer",
                                 s.path(),
                                 seg_frames,
                                 secs,
+                                max_rms,
                             );
-                            // 把残留的 buf 作为最后一个 chunk 发,然后 End
                             s.flush(&tx);
                             let _ = tx.send(FinalizerCmd::End);
                         }
@@ -484,6 +496,9 @@ fn make_filename(tz_off_s: i64) -> String {
 struct SegBuf {
     buf: Vec<i16>,
     path: String,
+    /// 整段里"单个 fetch 帧 RMS"的最大值。close 时拿来跟 RMS_DISCARD_THRESHOLD 比。
+    /// 单帧 32ms 够长能反映浊辅音/元音的能量,够短不会被静音段稀释。
+    max_rms: u32,
 }
 
 impl SegBuf {
@@ -491,11 +506,26 @@ impl SegBuf {
         Self {
             buf: Vec::with_capacity(CHUNK_SAMPLES),
             path,
+            max_rms: 0,
         }
     }
 
     fn push(&mut self, s: &[i16]) {
+        if !s.is_empty() {
+            // sum_sq 上限:512 sample × 32768² ≈ 5.5e11,落在 u64
+            let sum_sq: u64 = s.iter().map(|&v| (v as i32 * v as i32) as u64).sum();
+            let mean_sq = (sum_sq / s.len() as u64) as f32;
+            // ESP32-S3 有 FPU,f32 sqrt 单周期。每 32ms 一次,开销可忽略
+            let rms = mean_sq.sqrt() as u32;
+            if rms > self.max_rms {
+                self.max_rms = rms;
+            }
+        }
         self.buf.extend_from_slice(s);
+    }
+
+    fn max_rms(&self) -> u32 {
+        self.max_rms
     }
 
     /// buf 满了就 send 一次 Chunk 到 finalizer,buf 清空准备下一块。

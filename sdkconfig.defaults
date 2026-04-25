@@ -58,3 +58,12 @@ CONFIG_SPIFFS_OBJ_NAME_LEN=64
 CONFIG_FATFS_LFN_HEAP=y
 # UTF-8 兼容(虽然录音名是纯 ASCII,但开 LFN 顺手开 UTF-8 不亏)
 CONFIG_FATFS_API_ENCODING_UTF_8=y
+
+# ===== esp-sr 神经网络模型选择 =====
+# WebRTC VAD 在瞬态噪声(关门/键盘/咳嗽)面前误触发太多,切到神经网络版:
+# - vadnet1_medium:CNN VAD,真实噪声训练,瞬态杀手
+# - nsnet2:深度噪声抑制,把稳态底噪压到 VAD 看不见
+# 模型走 model 分区(2MB,见 partitions.csv),build 时 movemodel.py 自动打包
+# 成 srmodels.bin,esptool_py_flash_to_partition 自动加到 espflash 烧录清单
+CONFIG_SR_VADN_VADNET1_MEDIUM=y
+CONFIG_SR_NSN_NSNET2=y

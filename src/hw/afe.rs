@@ -1,8 +1,12 @@
-//! esp-sr AFE 安全 wrapper(双麦 BSS + WebRTC NS + WebRTC VAD,无唤醒词无 AEC)。
+//! esp-sr AFE 安全 wrapper(双麦 BSS + NSnet2 + VADnet1_medium,无唤醒词无 AEC)。
 //!
-//! 取代之前手搓的能量阈值 VAD —— 后者在关门 / 键盘 / 空调噪声面前必误判,
-//! 段切碎到大模型 ASR 拿不到完整句子。AFE 是 Espressif 官方做的语音前端
-//! pipeline,带子带能量 + 高斯模型 VAD,正合"对人声敏感、对噪声沉默"。
+//! 演进历程:
+//! - 1代:手搓能量阈值 VAD —— 关门/键盘/空调一来就误开
+//! - 2代:WebRTC NS + WebRTC VAD —— 稳态噪声还行,瞬态(50-300ms 撞击声)仍然
+//!   误触发,因为 WebRTC VAD 是 90 年代电话信道高斯混合模型,见过的噪声太少
+//! - 3代(现在):VADnet1_medium(CNN VAD)+ NSnet2(深度噪声抑制)。两个模型
+//!   在 model 分区(2MB),build 时 movemodel.py 自动打包,VADnet 见过真实瞬态
+//!   噪声训练样本,瞬态杀手
 //!
 //! 数据流:
 //! ```text
@@ -23,17 +27,24 @@ use anyhow::{anyhow, Result};
 use esp_idf_svc::sys::afe::{
     afe_config_free, afe_config_init, afe_config_t, afe_fetch_result_t,
     afe_mode_t_AFE_MODE_HIGH_PERF, afe_type_t_AFE_TYPE_SR, esp_afe_handle_from_config,
-    esp_afe_sr_data_t, esp_afe_sr_iface_t, esp_srmodel_init, srmodel_list_t, vad_mode_t_VAD_MODE_2,
-    vad_state_t_VAD_SPEECH,
+    esp_afe_sr_data_t, esp_afe_sr_iface_t, esp_srmodel_filter, esp_srmodel_init, srmodel_list_t,
+    vad_mode_t_VAD_MODE_2, vad_state_t_VAD_SPEECH,
 };
 
 /// AFE 输入格式:两路麦克风,无 playback reference,无 unknown 通道。
 /// 对应 ES7210 SDOUT1 → I2S Philips stereo L/R。
 const INPUT_FORMAT: &[u8] = b"MM\0";
 
-/// 模型分区标签(没建分区时返回 NULL,这里只是给 srmodel 一个正常名字,
-/// 不影响后续 NS/VAD 走 WebRTC 算法)。
+/// 模型分区标签,对应 partitions.csv 里的 `model` 分区(2MB,放 srmodels.bin)。
+/// `esp_srmodel_init` 会 mmap 这个分区,按文件名扫描出可用模型清单。
 const MODEL_PARTITION: &[u8] = b"model\0";
+
+/// VADnet 模型名前缀(esp-sr 用 `vadnet1_medium` / `vadnet1_small` 之类命名)。
+/// `esp_srmodel_filter` 用前缀模糊匹配,返回第一个命中的完整名字。
+const VADNET_PREFIX: &[u8] = b"vadnet\0";
+
+/// NSnet 模型名前缀(`nsnet1` / `nsnet2`)。
+const NSNET_PREFIX: &[u8] = b"nsnet\0";
 
 /// AFE 安全 wrapper。Drop 时自动 destroy。
 ///
@@ -63,16 +74,43 @@ pub struct FetchFrame<'a> {
 impl Afe {
     /// 创建 AFE 实例。失败原因:内存不足 / 配置冲突 / esp-sr 内部 init 错。
     pub fn new() -> Result<Self> {
-        // 1. srmodel:没分区返回 NULL,afe_config_init 收到 NULL 会让 NS/VAD 走 WebRTC
-        //    (esp_afe_config.h 注释:`vad_model_name` 为 null 时使用 WebRTC VAD)
+        // 1. srmodel:扫 model 分区拿可用模型清单。我们配置 SR_VADN_VADNET1_MEDIUM +
+        //    SR_NSN_NSNET2,build 时 movemodel.py 把这俩打包成 srmodels.bin 烧到 model 分区。
         let models: *mut srmodel_list_t =
             unsafe { esp_srmodel_init(MODEL_PARTITION.as_ptr() as *const _) };
         if models.is_null() {
-            log::info!("AFE: no model partition (OK, will use WebRTC NS+VAD)");
+            return Err(anyhow!(
+                "esp_srmodel_init returned NULL — model partition missing or empty"
+            ));
         }
 
-        // 2. 默认配置:input="MM"(2 mic 0 ref) + SR 类型 + HIGH_PERF
-        //    AFE_TYPE_SR 比 _VC 更适合本场景:线性 NS + BSS + VAD,不带非线性 NS。
+        // 2. 按前缀过滤拿模型名。返回的 *mut c_char 是 srmodel_list_t 内部堆上字符串,
+        //    生命周期跟 models 一致(我们不 deinit,等于永久有效)。NULL = 没找到。
+        let vad_name = unsafe {
+            esp_srmodel_filter(
+                models,
+                VADNET_PREFIX.as_ptr() as *const _,
+                core::ptr::null(),
+            )
+        };
+        let ns_name = unsafe {
+            esp_srmodel_filter(models, NSNET_PREFIX.as_ptr() as *const _, core::ptr::null())
+        };
+        if vad_name.is_null() {
+            log::warn!("AFE: VADnet model NOT found, falling back to WebRTC VAD");
+        } else {
+            let s = unsafe { core::ffi::CStr::from_ptr(vad_name) }.to_string_lossy();
+            log::info!("AFE: VAD model = {s}");
+        }
+        if ns_name.is_null() {
+            log::warn!("AFE: NSnet model NOT found, NS will be disabled");
+        } else {
+            let s = unsafe { core::ffi::CStr::from_ptr(ns_name) }.to_string_lossy();
+            log::info!("AFE: NS model = {s}");
+        }
+
+        // 3. 默认配置:input="MM"(2 mic 0 ref) + SR 类型 + HIGH_PERF
+        //    AFE_TYPE_SR 适合本场景:BSS + NS + VAD,不带 AEC(没接喇叭)。
         let cfg: *mut afe_config_t = unsafe {
             afe_config_init(
                 INPUT_FORMAT.as_ptr() as *const _,
@@ -85,14 +123,13 @@ impl Afe {
             return Err(anyhow!("afe_config_init returned NULL"));
         }
 
-        // 3. 微调:VAD 触发更宽松(MODE_2 = 中等敏感),min_speech 短一点能更早开段
-        //    afe_ringbuf_size 加大:默认 2-3 帧,SPIFFS 偶尔卡顿就会丢帧。给 16 帧
-        //    (~256ms 缓冲)能吃下偶发的 100ms 写盘抖动。
+        // 4. 微调
         unsafe {
             (*cfg).vad_mode = vad_mode_t_VAD_MODE_2;
-            (*cfg).vad_min_speech_ms = 64; // ≥32,默认 128;短一点能录到"嗯"
-            (*cfg).vad_min_noise_ms = 2000; // 静音 ≥2s 才算 silence;自然换气/思考常 1-2s,
-                                            // 设短了一句话被切成 N 段
+            // 128ms = AFE 默认值。WebRTC VAD 时代为了录"嗯"压到 64ms 招致大量瞬态
+            // 噪声误触发;现在 VADnet 自己就能区分瞬态噪声 vs 短语音,放回 128ms 安全
+            (*cfg).vad_min_speech_ms = 128;
+            (*cfg).vad_min_noise_ms = 2000; // 静音 ≥2s 才算 silence;自然换气/思考常 1-2s
             (*cfg).vad_init = true;
             (*cfg).ns_init = true;
             (*cfg).se_init = true; // BSS 双麦波束
@@ -100,7 +137,9 @@ impl Afe {
             (*cfg).aec_init = false; // 没接喇叭,无 reference 通道
             (*cfg).wakenet_init = false; // 不要唤醒词
             (*cfg).afe_ringbuf_size = 16; // 抗 SPIFFS 写盘抖动
-                                          // vad_model_name / ns_model_name / wakenet_model_name 留 NULL → WebRTC 实现
+                                          // 把神经网络模型名喂给 AFE。NULL = WebRTC fallback / 不挂这一级
+            (*cfg).vad_model_name = vad_name;
+            (*cfg).ns_model_name = ns_name;
         }
 
         // 4. 取 iface + 创建 data
