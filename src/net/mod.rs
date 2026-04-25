@@ -15,6 +15,7 @@ pub mod prov_ap;
 pub mod recordings_http;
 pub mod screen_http;
 pub mod sntp;
+pub mod system_http;
 pub mod time;
 pub mod wifi;
 

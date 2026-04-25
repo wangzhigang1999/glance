@@ -52,6 +52,8 @@
             @layer components {
                 .input {
                     @apply w-full px-3 py-2 rounded-md border border-line dark:border-line-dark bg-card dark:bg-card-dark text-sm font-mono focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent/60 transition;
+                    /* <input> 默认 size=20 给约 280px intrinsic min-width,在 flex/grid 子项里会撑爆容器 */
+                    min-width: 0;
                 }
                 .label {
                     @apply block text-[11px] uppercase tracking-wider text-ink/60 dark:text-ink-dark/60 mb-1.5 font-sans;
@@ -86,13 +88,13 @@
         <header
             class="sticky top-0 z-10 flex items-center gap-3 px-4 sm:px-6 py-3 border-b border-line dark:border-line-dark bg-paper/80 dark:bg-paper-dark/80 backdrop-blur"
         >
-            <a href="/" class="btn !px-3 !py-1.5 shrink-0"
+            <a href="/" class="btn !px-3 !py-1.5 shrink-0" title="Live"
                 ><i class="fa-solid fa-arrow-left"></i
                 ><span class="hidden sm:inline">Live</span></a
             >
             <div class="flex items-center gap-2 min-w-0">
-                <i class="fa-solid fa-sliders text-accent"></i>
-                <span class="font-semibold tracking-tight truncate"
+                <i class="fa-solid fa-sliders text-accent shrink-0"></i>
+                <span class="font-semibold tracking-tight truncate text-sm sm:text-base"
                     >Settings</span
                 >
                 <span
@@ -100,7 +102,11 @@
                     >runtime config</span
                 >
             </div>
-            <div class="ml-auto flex items-center gap-2">
+            <div class="ml-auto flex items-center gap-2 shrink-0">
+                <a href="/system.html" class="btn !px-3 !py-1.5" title="System"
+                    ><i class="fa-solid fa-gauge"></i
+                    ><span class="hidden sm:inline">System</span></a
+                >
                 <span
                     id="toast"
                     class="hidden sm:inline text-[11px] font-mono text-ink/50 dark:text-ink-dark/50"
@@ -339,7 +345,7 @@
                     <i class="fa-solid fa-power-off"></i>Reboot device
                 </button>
                 <span
-                    class="text-[11px] font-mono text-ink/50 dark:text-ink-dark/50 ml-auto"
+                    class="text-[11px] font-mono text-ink/50 dark:text-ink-dark/50 basis-full sm:basis-auto sm:ml-auto"
                     >values apply on next fetcher cycle</span
                 >
             </div>

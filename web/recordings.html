@@ -50,16 +50,18 @@
     </head>
     <body class="bg-paper dark:bg-paper-dark text-ink dark:text-ink-dark font-sans">
         <header class="border-b border-line dark:border-line-dark">
-            <div class="max-w-5xl mx-auto px-4 py-3 flex items-center gap-4">
-                <a href="/" class="font-semibold text-base">Curiosity Lab</a>
-                <span class="text-sm opacity-60">/ Recordings</span>
-                <div class="ml-auto flex gap-2">
-                    <a href="/" class="btn"><i class="fa-solid fa-house"></i>Home</a>
-                    <a href="/settings" class="btn"><i class="fa-solid fa-gear"></i>Settings</a>
-                    <a href="/logs.html" class="btn"><i class="fa-solid fa-file-lines"></i>Logs</a>
-                    <button id="refresh" class="btn"><i class="fa-solid fa-rotate"></i>Refresh</button>
-                    <button id="resync" class="btn" title="Re-scan storage if index seems out of sync"><i class="fa-solid fa-arrows-rotate"></i>Resync</button>
-                    <button id="del-all" class="btn btn-danger"><i class="fa-solid fa-trash-can"></i>Delete All</button>
+            <div class="max-w-5xl mx-auto px-3 sm:px-4 py-3 flex items-center gap-2 sm:gap-4 flex-wrap">
+                <a href="/" class="font-semibold text-sm sm:text-base shrink-0">Curiosity Lab</a>
+                <span class="text-sm opacity-60 hidden sm:inline">/ Recordings</span>
+                <span class="text-sm opacity-60 sm:hidden">/ Rec</span>
+                <div class="ml-auto flex gap-1.5 sm:gap-2 flex-wrap">
+                    <a href="/" class="btn" title="Home"><i class="fa-solid fa-house"></i><span class="hidden sm:inline">Home</span></a>
+                    <a href="/system.html" class="btn" title="System"><i class="fa-solid fa-gauge"></i><span class="hidden sm:inline">System</span></a>
+                    <a href="/settings" class="btn" title="Settings"><i class="fa-solid fa-gear"></i><span class="hidden sm:inline">Settings</span></a>
+                    <a href="/logs.html" class="btn" title="Logs"><i class="fa-solid fa-file-lines"></i><span class="hidden sm:inline">Logs</span></a>
+                    <button id="refresh" class="btn" title="Refresh"><i class="fa-solid fa-rotate"></i><span class="hidden sm:inline">Refresh</span></button>
+                    <button id="resync" class="btn" title="Re-scan storage if index seems out of sync"><i class="fa-solid fa-arrows-rotate"></i><span class="hidden sm:inline">Resync</span></button>
+                    <button id="del-all" class="btn btn-danger" title="Delete All"><i class="fa-solid fa-trash-can"></i><span class="hidden sm:inline">Delete All</span></button>
                 </div>
             </div>
         </header>
@@ -105,15 +107,15 @@
                     const url = "/api/recording?name=" + encodeURIComponent(f.name);
                     const row = document.createElement("div");
                     row.className =
-                        "bg-card dark:bg-card-dark border border-line dark:border-line-dark rounded-lg p-3 flex flex-wrap items-center gap-3";
+                        "bg-card dark:bg-card-dark border border-line dark:border-line-dark rounded-lg p-3 flex flex-wrap items-center gap-2 sm:gap-3";
                     row.innerHTML = `
-                        <div class="flex-1 min-w-0">
+                        <div class="flex-1 min-w-0 basis-full sm:basis-auto">
                           <div class="font-mono text-sm truncate">${fmtName(f.name)}</div>
-                          <div class="text-xs opacity-60 font-mono mt-0.5">${f.name} · ${fmtSize(f.size)}</div>
+                          <div class="text-xs opacity-60 font-mono mt-0.5 truncate">${f.name} · ${fmtSize(f.size)}</div>
                         </div>
-                        <audio controls preload="none" class="flex-1 min-w-[260px]" src="${url}"></audio>
-                        <a href="${url}" download="${f.name}" class="btn"><i class="fa-solid fa-download"></i>Download</a>
-                        <button class="btn btn-danger" data-del="${f.name}"><i class="fa-solid fa-trash"></i></button>
+                        <audio controls preload="none" class="flex-1 basis-full sm:basis-auto sm:min-w-[240px] w-full" src="${url}"></audio>
+                        <a href="${url}" download="${f.name}" class="btn" title="Download"><i class="fa-solid fa-download"></i><span class="hidden sm:inline">Download</span></a>
+                        <button class="btn btn-danger" data-del="${f.name}" title="Delete"><i class="fa-solid fa-trash"></i></button>
                     `;
                     list.appendChild(row);
                 }

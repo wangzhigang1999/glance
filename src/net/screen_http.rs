@@ -36,6 +36,7 @@ use crate::{
     net::{
         creds::{CredsStore, MAX_SLOTS as WIFI_MAX_SLOTS},
         log_sink::LogHub,
+        system_http::SharedSystem,
         wifi::WifiCreds,
     },
 };
@@ -77,6 +78,7 @@ pub fn start(
     store: Arc<ConfigStore>,
     creds: Arc<CredsStore>,
     log_hub: Arc<LogHub>,
+    system_shared: SharedSystem,
 ) -> Result<EspHttpServer<'static>> {
     let srv_cfg = Configuration {
         stack_size: 10 * 1024,
@@ -512,8 +514,11 @@ pub fn start(
     // ---- 录音文件浏览(/recordings.html + /api/recordings + /api/recording) ----
     crate::net::recordings_http::register(&mut server)?;
 
+    // ---- 硬件总览页(/system.html + /api/system) ----
+    crate::net::system_http::register(&mut server, system_shared)?;
+
     log::info!(
-        "Screen HTTP server up on http://<ip>/  (/, /settings, /logs.html, /logs.json, /screen.bmp, /next, /api/config, /api/wifi{{,/remove}}, /api/wifi_forget, /api/reboot, /recordings.html, /api/recording{{s}})"
+        "Screen HTTP server up on http://<ip>/  (/, /settings, /logs.html, /logs.json, /screen.bmp, /next, /api/config, /api/wifi{{,/remove}}, /api/wifi_forget, /api/reboot, /recordings.html, /api/recording{{s}}, /system.html, /api/system)"
     );
     Ok(server)
 }

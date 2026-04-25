@@ -51,7 +51,7 @@
                     @apply px-2.5 py-1.5 rounded-md border border-line dark:border-line-dark bg-transparent text-sm cursor-pointer;
                 }
                 .inp {
-                    @apply px-2.5 py-1.5 rounded-md border border-line dark:border-line-dark bg-transparent text-sm w-44 focus:outline-none focus:ring-2 focus:ring-accent/40;
+                    @apply px-2.5 py-1.5 rounded-md border border-line dark:border-line-dark bg-transparent text-sm flex-1 min-w-[120px] sm:max-w-[200px] focus:outline-none focus:ring-2 focus:ring-accent/40;
                 }
             }
         </style>
@@ -148,16 +148,16 @@
         <div
             class="flex items-center gap-2 px-3 sm:px-5 py-2 border-b border-line dark:border-line-dark shrink-0 overflow-x-auto"
         >
-            <button id="pause" class="btn">
+            <button id="pause" class="btn shrink-0" title="Pause">
                 <i class="fa-solid fa-pause" id="pIcon"></i>
-                <span id="pTxt">Pause</span>
+                <span id="pTxt" class="hidden sm:inline">Pause</span>
             </button>
-            <button id="clear" class="btn">
+            <button id="clear" class="btn shrink-0" title="Clear">
                 <i class="fa-solid fa-trash"></i>
-                <span>Clear</span>
+                <span class="hidden sm:inline">Clear</span>
             </button>
             <label
-                class="btn select-none"
+                class="btn select-none shrink-0"
                 title="Auto-scroll to latest"
             >
                 <input
@@ -166,10 +166,10 @@
                     checked
                     class="accent-accent"
                 />
-                <span>Auto-scroll</span>
+                <span class="hidden sm:inline">Auto-scroll</span>
             </label>
-            <span class="w-px h-5 bg-line dark:bg-line-dark mx-1 shrink-0"></span>
-            <select id="lvl" class="sel" title="Level filter">
+            <span class="w-px h-5 bg-line dark:bg-line-dark mx-1 shrink-0 hidden sm:inline-block"></span>
+            <select id="lvl" class="sel shrink-0" title="Level filter">
                 <option value="V">All</option>
                 <option value="D">Debug+</option>
                 <option value="I" selected>Info+</option>
@@ -184,9 +184,17 @@
                 spellcheck="false"
             />
             <a
-                href="/"
+                href="/system.html"
                 class="btn ml-auto shrink-0"
-                aria-label="Back to home"
+                title="System"
+            >
+                <i class="fa-solid fa-gauge"></i>
+                <span class="hidden sm:inline">System</span>
+            </a>
+            <a
+                href="/"
+                class="btn shrink-0"
+                title="Home"
             >
                 <i class="fa-solid fa-arrow-left"></i>
                 <span class="hidden sm:inline">Home</span>

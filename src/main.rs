@@ -59,8 +59,8 @@ use crate::{
     },
     net::{
         activity::Activity, format_local_date, format_local_hms, gh_worker, github::ContribData,
-        log_sink, notifications::NotifSummary, screen_http, CredsStore, Provisioner, Sntp,
-        WifiCreds, WifiManager,
+        log_sink, notifications::NotifSummary, screen_http, system_http, CredsStore, Provisioner,
+        Sntp, WifiCreds, WifiManager,
     },
     ui::{AppState, Page},
 };
@@ -185,7 +185,10 @@ fn main() -> anyhow::Result<()> {
     // 板上 ML1220 钮扣电池在的话能跨断电保活;没装则 OS=1,等 SNTP 后再写回。
     let rtc_bootstrap = Rtc::new(i2c_bus.clone());
     match rtc_bootstrap.sync_to_system() {
-        Ok(true) => log::info!("RTC valid, system time loaded from RTC"),
+        Ok(true) => {
+            log::info!("RTC valid, system time loaded from RTC");
+            system_http::set_clock_source(system_http::CLK_RTC);
+        }
         Ok(false) => log::info!("RTC OS=1 (no backup battery / first boot), waiting for SNTP"),
         Err(e) => log::warn!("RTC read failed: {e:#}"),
     }
@@ -317,6 +320,7 @@ fn main() -> anyhow::Result<()> {
                 for _ in 0..120 {
                     sleep(Duration::from_secs(1));
                     if crate::net::time::unix_secs().is_some() {
+                        system_http::set_clock_source(system_http::CLK_SNTP);
                         if let Err(e) = rtc.sync_from_system() {
                             log::warn!("RTC writeback failed: {e:#}");
                         }
@@ -336,8 +340,9 @@ fn main() -> anyhow::Result<()> {
     let activity_shared: Arc<Mutex<Option<Activity>>> = Arc::new(Mutex::new(None));
     let activity_err_shared: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
 
-    // ---- 屏幕镜像 HTTP 服务 + 运行时配置 API ----
+    // ---- 屏幕镜像 HTTP 服务 + 运行时配置 API + 硬件总览 ----
     let screen_shared = screen_http::new_shared_fb();
+    let system_shared = system_http::new_shared();
     let http_next_flag = Arc::new(AtomicBool::new(false));
     let _screen_server = match screen_http::start(
         screen_shared.clone(),
@@ -346,6 +351,7 @@ fn main() -> anyhow::Result<()> {
         config_store.clone(),
         creds_store.clone(),
         log_hub.clone(),
+        system_shared.clone(),
     ) {
         Ok(s) => Some(s),
         Err(e) => {
@@ -536,6 +542,64 @@ fn main() -> anyhow::Result<()> {
                 guard.clear();
                 guard.extend_from_slice(display.fb_raw());
             }
+
+            // ---- 硬件总览 snapshot:供 /api/system 读 ----
+            // 存储信息 + 录音索引快照
+            let (storage_kind, storage_used, storage_total) = if let Some(sd) = &_sd {
+                let (u, t) = sd.stats();
+                ("sd", u as u64, t as u64)
+            } else if let Some(s) = &_storage {
+                let (u, t) = s.stats();
+                ("spiffs", u as u64, t as u64)
+            } else {
+                ("none", 0, 0)
+            };
+            let (rec_count, rec_bytes) = {
+                let (_, total, total_size) = recorder::index_list_paged(0, 0);
+                (total as u32, total_size)
+            };
+            let snap = system_http::SystemSnapshot {
+                fw: state.fw_version.to_string(),
+                idf: state.idf_version.to_string(),
+                mac: state.mac_suffix.as_str().to_string(),
+                uptime_s: state.uptime_secs,
+                reset_reason: state.reset_reason.to_string(),
+                sample_count: state.sample_count,
+                heap_free: state.heap_free,
+                heap_total: state.heap_total,
+                heap_min: state.heap_min_ever,
+                psram_free: state.psram_free,
+                psram_total: state.psram_total,
+                stack_hwm: state.stack_hwm_bytes,
+                flash_total: state.flash_total,
+                app_size: state.app_part_size,
+                app_used: state.app_used,
+                app_part_addr: flash_stats.app_part_addr,
+                storage_kind: storage_kind.to_string(),
+                storage_used,
+                storage_total,
+                recordings_count: rec_count,
+                recordings_bytes: rec_bytes,
+                temp_c: state.temperature_c,
+                humid_pct: state.humidity_pct,
+                chip_temp_c: state.chip_temp_c,
+                temp_off_c: t_off,
+                humid_off_pct: h_off,
+                battery_mv: state.battery.map(|(mv, _)| mv),
+                battery_pct: state.battery.map(|(_, p)| p),
+                // Battery::read 把 USB 和读错误都映射成 None,这里只能近似判定
+                usb_plugged: state.battery.is_none(),
+                wifi_connected: state.wifi_connected,
+                wifi_ssid: state.wifi_ssid.as_str().to_string(),
+                wifi_ip: state.ip_octets,
+                wifi_rssi: state.rssi,
+                unix_secs: crate::net::time::unix_secs(),
+                clock_source: system_http::clock_source_str().to_string(),
+            };
+            if let Ok(mut guard) = system_shared.write() {
+                *guard = snap;
+            }
+
             last_refresh = Instant::now();
         }
 

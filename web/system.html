@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en" class="h-full">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <title>Curiosity Lab · System</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            rel="stylesheet"
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        />
+        <link
+            rel="stylesheet"
+            href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"
+            crossorigin="anonymous"
+            referrerpolicy="no-referrer"
+        />
+        <script src="https://cdn.tailwindcss.com"></script>
+        <script>
+            tailwind.config = {
+                darkMode: "media",
+                theme: {
+                    extend: {
+                        colors: {
+                            paper: { DEFAULT: "#f8f7f4", dark: "#12100b" },
+                            ink: { DEFAULT: "#252119", dark: "#efeee9" },
+                            line: { DEFAULT: "#dcd9cf", dark: "#36322a" },
+                            card: { DEFAULT: "#ffffff", dark: "#1c1911" },
+                            accent: "#bc3908",
+                        },
+                        fontFamily: {
+                            sans: ["Inter", "system-ui", "sans-serif"],
+                            mono: ['"JetBrains Mono"', "ui-monospace", "Consolas", "monospace"],
+                        },
+                    },
+                },
+            };
+        </script>
+        <style type="text/tailwindcss">
+            @layer components {
+                .btn {
+                    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-line dark:border-line-dark text-sm hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer whitespace-nowrap;
+                }
+                .card {
+                    @apply bg-card dark:bg-card-dark border border-line dark:border-line-dark rounded-lg p-4;
+                    overflow: hidden; /* 兜底,防内部计算溢出外泄 */
+                }
+                .card h3 {
+                    @apply text-xs font-semibold uppercase tracking-wider opacity-60 mb-3 flex items-center gap-1.5;
+                }
+                /* kv:窄屏 label/value 上下两行(避免 flex/grid 在 ≤480 时算崩);
+                   ≥480 才回到一行 label 左 / value 右的紧凑布局 */
+                .kv {
+                    display: block;
+                    padding: 0.25rem 0;
+                    font-size: 0.875rem;
+                    line-height: 1.25rem;
+                    overflow: hidden;
+                }
+                .kv > span:first-child {
+                    display: block;
+                    opacity: 0.6;
+                    font-size: 0.7rem;
+                    text-transform: uppercase;
+                    letter-spacing: 0.04em;
+                }
+                .kv > span:last-child {
+                    display: block;
+                    font-family:
+                        "JetBrains Mono", ui-monospace, Consolas, monospace;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                }
+                @media (min-width: 480px) {
+                    .kv {
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: baseline;
+                        gap: 0.75rem;
+                    }
+                    .kv > span:first-child {
+                        display: inline;
+                        font-size: 0.875rem;
+                        text-transform: none;
+                        letter-spacing: normal;
+                        flex-shrink: 0;
+                    }
+                    .kv > span:last-child {
+                        display: inline;
+                        text-align: right;
+                        min-width: 0;
+                    }
+                }
+                .bar {
+                    @apply h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden mt-1;
+                }
+                .bar > div {
+                    @apply h-full bg-accent transition-all;
+                }
+                .bar-warn > div {
+                    @apply bg-amber-500;
+                }
+                .bar-crit > div {
+                    @apply bg-red-500;
+                }
+            }
+        </style>
+    </head>
+    <body class="bg-paper dark:bg-paper-dark text-ink dark:text-ink-dark font-sans">
+        <header class="border-b border-line dark:border-line-dark">
+            <div class="max-w-6xl mx-auto px-3 sm:px-4 py-3 flex items-center gap-2 sm:gap-4 flex-wrap">
+                <a href="/" class="font-semibold text-sm sm:text-base shrink-0">Curiosity Lab</a>
+                <span class="text-sm opacity-60 hidden sm:inline">/ System</span>
+                <span class="text-sm opacity-60 sm:hidden">/ Sys</span>
+                <div class="ml-auto flex gap-1.5 sm:gap-2 flex-wrap">
+                    <a href="/" class="btn" title="Home"><i class="fa-solid fa-house"></i><span class="hidden sm:inline">Home</span></a>
+                    <a href="/settings" class="btn" title="Settings"><i class="fa-solid fa-gear"></i><span class="hidden sm:inline">Settings</span></a>
+                    <a href="/recordings.html" class="btn" title="Recordings"><i class="fa-solid fa-microphone"></i><span class="hidden sm:inline">Recordings</span></a>
+                    <a href="/logs.html" class="btn" title="Logs"><i class="fa-solid fa-file-lines"></i><span class="hidden sm:inline">Logs</span></a>
+                    <button id="refresh" class="btn" title="Refresh"><i class="fa-solid fa-rotate"></i><span class="hidden sm:inline">Refresh</span></button>
+                </div>
+            </div>
+        </header>
+
+        <main class="max-w-6xl mx-auto px-3 sm:px-4 py-4 sm:py-6">
+            <div id="status" class="text-xs opacity-60 font-mono mb-3">loading…</div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                <!-- Identity -->
+                <div class="card">
+                    <h3><i class="fa-solid fa-id-card"></i>Identity</h3>
+                    <div class="kv"><span>Firmware</span><span id="id-fw">—</span></div>
+                    <div class="kv"><span>ESP-IDF</span><span id="id-idf">—</span></div>
+                    <div class="kv"><span>MAC suffix</span><span id="id-mac">—</span></div>
+                    <div class="kv"><span>Uptime</span><span id="id-uptime">—</span></div>
+                    <div class="kv"><span>Reset reason</span><span id="id-reset">—</span></div>
+                    <div class="kv"><span>Sample #</span><span id="id-samples">—</span></div>
+                </div>
+
+                <!-- Memory -->
+                <div class="card">
+                    <h3><i class="fa-solid fa-microchip"></i>Memory</h3>
+                    <div class="kv"><span>SRAM</span><span id="mem-sram">—</span></div>
+                    <div class="bar" id="mem-sram-bar-wrap"><div id="mem-sram-bar" style="width:0%"></div></div>
+                    <div class="kv mt-2"><span>SRAM min ever</span><span id="mem-sram-min">—</span></div>
+                    <div class="kv"><span>PSRAM</span><span id="mem-psram">—</span></div>
+                    <div class="bar" id="mem-psram-bar-wrap"><div id="mem-psram-bar" style="width:0%"></div></div>
+                    <div class="kv mt-2"><span>Main stack HWM</span><span id="mem-stack">—</span></div>
+                </div>
+
+                <!-- Flash -->
+                <div class="card">
+                    <h3><i class="fa-solid fa-floppy-disk"></i>Flash</h3>
+                    <div class="kv"><span>Chip total</span><span id="flash-total">—</span></div>
+                    <div class="kv"><span>App partition</span><span id="flash-app">—</span></div>
+                    <div class="bar" id="flash-bar-wrap"><div id="flash-bar" style="width:0%"></div></div>
+                    <div class="kv mt-2"><span>App image used</span><span id="flash-used">—</span></div>
+                    <div class="kv"><span>App offset</span><span id="flash-addr">—</span></div>
+                </div>
+
+                <!-- Storage -->
+                <div class="card">
+                    <h3><i class="fa-solid fa-hard-drive"></i>Storage <span id="store-kind-badge" class="ml-auto text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/10 dark:bg-white/10">—</span></h3>
+                    <div class="kv"><span>Used / Total</span><span id="store-usage">—</span></div>
+                    <div class="bar" id="store-bar-wrap"><div id="store-bar" style="width:0%"></div></div>
+                    <div class="kv mt-2"><span>Recordings</span><span id="store-recs">—</span></div>
+                    <div class="kv"><span>Recordings size</span><span id="store-recs-bytes">—</span></div>
+                </div>
+
+                <!-- Sensors -->
+                <div class="card">
+                    <h3><i class="fa-solid fa-temperature-half"></i>Sensors</h3>
+                    <div class="kv"><span>Temperature</span><span id="sens-t">—</span></div>
+                    <div class="kv"><span>Humidity</span><span id="sens-h">—</span></div>
+                    <div class="kv"><span>Chip temp</span><span id="sens-chip">—</span></div>
+                    <div class="kv"><span>T offset</span><span id="sens-t-off">—</span></div>
+                    <div class="kv"><span>RH offset</span><span id="sens-h-off">—</span></div>
+                </div>
+
+                <!-- Power -->
+                <div class="card">
+                    <h3><i class="fa-solid fa-plug"></i>Power</h3>
+                    <div class="kv"><span>Source</span><span id="pwr-source">—</span></div>
+                    <div class="kv"><span>Battery</span><span id="pwr-bat">—</span></div>
+                    <div class="bar" id="pwr-bar-wrap"><div id="pwr-bar" style="width:0%"></div></div>
+                </div>
+
+                <!-- WiFi -->
+                <div class="card">
+                    <h3><i class="fa-solid fa-wifi"></i>WiFi</h3>
+                    <div class="kv"><span>Status</span><span id="wifi-status">—</span></div>
+                    <div class="kv"><span>SSID</span><span id="wifi-ssid">—</span></div>
+                    <div class="kv"><span>IP</span><span id="wifi-ip">—</span></div>
+                    <div class="kv"><span>RSSI</span><span id="wifi-rssi">—</span></div>
+                </div>
+
+                <!-- Clock -->
+                <div class="card">
+                    <h3><i class="fa-solid fa-clock"></i>Clock</h3>
+                    <div class="kv"><span>Source</span><span id="clk-source">—</span></div>
+                    <div class="kv"><span>UTC</span><span id="clk-utc">—</span></div>
+                    <div class="kv"><span>Local</span><span id="clk-local">—</span></div>
+                    <div class="kv"><span>Unix</span><span id="clk-unix">—</span></div>
+                </div>
+            </div>
+        </main>
+
+        <script>
+            const REFRESH_MS = 5000;
+            const status = document.getElementById("status");
+            const $ = (id) => document.getElementById(id);
+
+            function fmtBytes(n) {
+                if (n == null) return "—";
+                if (n < 1024) return n + " B";
+                if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+                if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MB";
+                return (n / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+            }
+            function fmtUptime(s) {
+                if (s == null) return "—";
+                const d = Math.floor(s / 86400);
+                const h = Math.floor((s % 86400) / 3600);
+                const m = Math.floor((s % 3600) / 60);
+                const ss = s % 60;
+                if (d > 0) return `${d}d ${h}h ${m}m`;
+                if (h > 0) return `${h}h ${m}m ${ss}s`;
+                if (m > 0) return `${m}m ${ss}s`;
+                return `${ss}s`;
+            }
+            function setBar(barId, wrapId, used, total) {
+                const pct = total > 0 ? Math.min(100, Math.max(0, (used / total) * 100)) : 0;
+                $(barId).style.width = pct.toFixed(1) + "%";
+                const wrap = $(wrapId);
+                wrap.classList.remove("bar-warn", "bar-crit");
+                if (pct >= 90) wrap.classList.add("bar-crit");
+                else if (pct >= 75) wrap.classList.add("bar-warn");
+            }
+            function fmtIp(arr) {
+                if (!arr || arr.length !== 4) return "—";
+                return arr.join(".");
+            }
+            function fmtUnixUtc(s) {
+                if (s == null) return "—";
+                const d = new Date(s * 1000);
+                if (isNaN(d.getTime())) return "—";
+                return d.toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC");
+            }
+            function fmtUnixLocal(s) {
+                if (s == null) return "—";
+                const d = new Date(s * 1000);
+                if (isNaN(d.getTime())) return "—";
+                return d.toLocaleString();
+            }
+
+            function render(s) {
+                // Identity
+                $("id-fw").textContent = s.fw || "—";
+                $("id-idf").textContent = s.idf || "—";
+                $("id-mac").textContent = s.mac || "—";
+                $("id-uptime").textContent = fmtUptime(s.uptime_s);
+                $("id-reset").textContent = s.reset_reason || "—";
+                $("id-samples").textContent = s.sample_count ?? "—";
+
+                // Memory
+                const sramUsed = s.heap_total - s.heap_free;
+                $("mem-sram").textContent = `${fmtBytes(sramUsed)} / ${fmtBytes(s.heap_total)}`;
+                setBar("mem-sram-bar", "mem-sram-bar-wrap", sramUsed, s.heap_total);
+                $("mem-sram-min").textContent = fmtBytes(s.heap_min);
+                const psramUsed = s.psram_total - s.psram_free;
+                $("mem-psram").textContent = s.psram_total > 0
+                    ? `${fmtBytes(psramUsed)} / ${fmtBytes(s.psram_total)}`
+                    : "n/a";
+                setBar("mem-psram-bar", "mem-psram-bar-wrap", psramUsed, s.psram_total);
+                $("mem-stack").textContent = fmtBytes(s.stack_hwm) + " free";
+
+                // Flash
+                $("flash-total").textContent = fmtBytes(s.flash_total);
+                $("flash-app").textContent = fmtBytes(s.app_size);
+                setBar("flash-bar", "flash-bar-wrap", s.app_used, s.app_size);
+                $("flash-used").textContent = `${fmtBytes(s.app_used)} (${
+                    s.app_size > 0 ? ((s.app_used / s.app_size) * 100).toFixed(1) : 0
+                }%)`;
+                $("flash-addr").textContent = "0x" + (s.app_part_addr || 0).toString(16);
+
+                // Storage
+                const kind = s.storage_kind || "none";
+                $("store-kind-badge").textContent = kind.toUpperCase();
+                $("store-kind-badge").className =
+                    "ml-auto text-[10px] font-mono px-1.5 py-0.5 rounded " +
+                    (kind === "sd"
+                        ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
+                        : kind === "spiffs"
+                        ? "bg-amber-500/20 text-amber-700 dark:text-amber-300"
+                        : "bg-black/10 dark:bg-white/10");
+                $("store-usage").textContent = `${fmtBytes(s.storage_used)} / ${fmtBytes(s.storage_total)}`;
+                setBar("store-bar", "store-bar-wrap", s.storage_used, s.storage_total);
+                $("store-recs").textContent = (s.recordings_count ?? 0) + " files";
+                $("store-recs-bytes").textContent = fmtBytes(s.recordings_bytes);
+
+                // Sensors
+                $("sens-t").textContent = s.temp_c != null ? s.temp_c.toFixed(2) + " °C" : "—";
+                $("sens-h").textContent = s.humid_pct != null ? s.humid_pct.toFixed(2) + " %" : "—";
+                $("sens-chip").textContent = s.chip_temp_c != null ? s.chip_temp_c.toFixed(1) + " °C" : "—";
+                const tOff = s.temp_off_c ?? 0;
+                const hOff = s.humid_off_pct ?? 0;
+                $("sens-t-off").textContent = (tOff >= 0 ? "+" : "") + tOff.toFixed(2) + " °C";
+                $("sens-h-off").textContent = (hOff >= 0 ? "+" : "") + hOff.toFixed(2) + " %";
+
+                // Power
+                if (s.usb_plugged) {
+                    $("pwr-source").textContent = "USB";
+                    $("pwr-bat").textContent = "—";
+                    setBar("pwr-bar", "pwr-bar-wrap", 0, 0);
+                } else if (s.battery_mv != null) {
+                    $("pwr-source").textContent = "Battery";
+                    $("pwr-bat").textContent = `${s.battery_mv} mV (${s.battery_pct ?? 0}%)`;
+                    setBar("pwr-bar", "pwr-bar-wrap", s.battery_pct ?? 0, 100);
+                } else {
+                    $("pwr-source").textContent = "—";
+                    $("pwr-bat").textContent = "—";
+                    setBar("pwr-bar", "pwr-bar-wrap", 0, 0);
+                }
+
+                // WiFi
+                $("wifi-status").textContent = s.wifi_connected ? "connected" : "disconnected";
+                $("wifi-ssid").textContent = s.wifi_ssid || "—";
+                $("wifi-ip").textContent = fmtIp(s.wifi_ip);
+                $("wifi-rssi").textContent = s.wifi_rssi != null ? s.wifi_rssi + " dBm" : "—";
+
+                // Clock
+                $("clk-source").textContent = s.clock_source || "—";
+                $("clk-utc").textContent = fmtUnixUtc(s.unix_secs);
+                $("clk-local").textContent = fmtUnixLocal(s.unix_secs);
+                $("clk-unix").textContent = s.unix_secs ?? "—";
+            }
+
+            async function load() {
+                try {
+                    const r = await fetch("/api/system", { cache: "no-store" });
+                    if (!r.ok) throw new Error("HTTP " + r.status);
+                    const s = await r.json();
+                    render(s);
+                    status.textContent = "updated " + new Date().toLocaleTimeString();
+                } catch (e) {
+                    status.textContent = "load failed: " + e;
+                }
+            }
+
+            document.getElementById("refresh").addEventListener("click", load);
+            load();
+            setInterval(load, REFRESH_MS);
+        </script>
+    </body>
+</html>
