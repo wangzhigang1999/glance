@@ -72,23 +72,3 @@ CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
 # Block Ack 窗口 16→8:吞吐影响小(我们只做小 JSON GET),省内部缓冲。
 CONFIG_ESP_WIFI_RX_BA_WIN=8
 
-# ===== SPIFFS(板内 12MB,SD 失败时的 fallback) =====
-# 文件名要装得下 "recordings/20260425-143022-001.wav" = 32 字符,默认 32 卡边缘,
-# 留点余量到 64,方便后期加 .uploaded / .tmp 之类后缀
-CONFIG_SPIFFS_OBJ_NAME_LEN=64
-
-# ===== FATFS over SDMMC(SD 卡,首选录音存储) =====
-# WAV 文件名 "20260425-143022-001.wav" 23 字符,超过 8.3,必须开 LFN。
-# LFN_HEAP 把临时缓冲放堆里(不占线程栈),vad_rec 12K 栈才够用
-CONFIG_FATFS_LFN_HEAP=y
-# UTF-8 兼容(虽然录音名是纯 ASCII,但开 LFN 顺手开 UTF-8 不亏)
-CONFIG_FATFS_API_ENCODING_UTF_8=y
-
-# ===== esp-sr 神经网络模型选择 =====
-# WebRTC VAD 在瞬态噪声(关门/键盘/咳嗽)面前误触发太多,切到神经网络版:
-# - vadnet1_medium:CNN VAD,真实噪声训练,瞬态杀手
-# - nsnet2:深度噪声抑制,把稳态底噪压到 VAD 看不见
-# 模型走 model 分区(2MB,见 partitions.csv),build 时 movemodel.py 自动打包
-# 成 srmodels.bin,esptool_py_flash_to_partition 自动加到 espflash 烧录清单
-CONFIG_SR_VADN_VADNET1_MEDIUM=y
-CONFIG_SR_NSN_NSNET2=y

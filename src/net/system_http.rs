@@ -45,13 +45,6 @@ pub struct SystemSnapshot {
     pub app_used: u32,
     pub app_part_addr: u32,
 
-    // ---- storage(SD 或 SPIFFS,挂载点统一在 /storage)----
-    pub storage_kind: String, // "sd" | "spiffs" | "none"
-    pub storage_used: u64,
-    pub storage_total: u64,
-    pub recordings_count: u32,
-    pub recordings_bytes: u64,
-
     // ---- sensors ----
     pub temp_c: Option<f32>,
     pub humid_pct: Option<f32>,

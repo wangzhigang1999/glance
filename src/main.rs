@@ -17,7 +17,6 @@ mod config;
 mod display;
 mod hw;
 mod net;
-mod recorder;
 mod ui;
 
 use std::{
@@ -48,12 +47,8 @@ use crate::{
         battery::{Battery, PowerSource},
         button::Button,
         chip_temp::ChipTemp,
-        es7210::Es7210,
-        mic::Mic,
         rtc::Rtc,
-        sdcard::Sdcard,
         shtc3::Shtc3,
-        storage::Storage,
         system::{mac_suffix, read_flash_stats, read_sys_stats},
         I2cBus,
     },
@@ -148,35 +143,6 @@ fn main() -> anyhow::Result<()> {
     )?;
     let i2c_bus: I2cBus = Arc::new(Mutex::new(i2c_drv));
 
-    // ---- 录音存储:先试 SD 卡(SDMMC 1-bit 38/21/39),失败回退板内 SPIFFS ----
-    // 两路都挂在 /storage,recorder/HTTP 路径完全不变。
-    // SD 优先:容量大(GB 级 vs 12MB),掉电安全也好(FATFS 比 SPIFFS 鲁棒)。
-    log::info!("Init recording storage (SD first, SPIFFS fallback)");
-    let _sd: Option<Sdcard>;
-    let _storage: Option<Storage>;
-    match Sdcard::mount() {
-        Ok(s) => {
-            _sd = Some(s);
-            _storage = None;
-            recorder::index_scan_storage();
-        }
-        Err(e) => {
-            log::warn!("SD mount failed ({e:#}), falling back to SPIFFS");
-            _sd = None;
-            _storage = match Storage::mount() {
-                Ok(s) => {
-                    recorder::index_scan_storage();
-                    Some(s)
-                }
-                Err(e) => {
-                    log::warn!("SPIFFS mount also failed (recording disabled): {e:#}");
-                    None
-                }
-            };
-        }
-    }
-    let has_storage_backend = _sd.is_some() || _storage.is_some();
-
     // ---- SHTC3 ----
     log::info!("Init SHTC3 sensor (addr 0x70)");
     let mut sensor = Shtc3::new(i2c_bus.clone());
@@ -193,50 +159,6 @@ fn main() -> anyhow::Result<()> {
         Err(e) => log::warn!("RTC read failed: {e:#}"),
     }
     drop(rtc_bootstrap);
-
-    // ---- ES7210 + I2S MIC(双麦 MIC1+MIC2 / 16kHz / 16-bit / stereo)+ esp-sr AFE ----
-    // 等 A3V3 稳了再发 I2C,免得首次写寄存器 NACK
-    sleep(Duration::from_millis(50));
-    let mut mic_codec = Es7210::new(i2c_bus.clone());
-    if let Err(e) = mic_codec.open_mic12() {
-        log::warn!("ES7210 open failed (mic disabled): {e:#}");
-    } else {
-        match Mic::new(
-            peripherals.i2s0,
-            peripherals.pins.gpio16,
-            peripherals.pins.gpio9,
-            peripherals.pins.gpio45,
-            peripherals.pins.gpio10,
-        ) {
-            Ok(mut mic) => match mic.start() {
-                Err(e) => log::warn!("Mic start failed: {e:#}"),
-                Ok(()) => {
-                    // 给 I2S MCLK 几个 ms 稳定后再让 ES7210 上电模拟通路
-                    sleep(Duration::from_millis(10));
-                    if let Err(e) = mic_codec.enable() {
-                        log::warn!("ES7210 enable failed (analog path off): {e:#}");
-                    }
-                    // AFE 创建在主线程,失败就不开录音(其它功能照跑)
-                    match crate::hw::afe::Afe::new() {
-                        Ok(afe) => {
-                            let has_storage = has_storage_backend;
-                            let tz_for_rec = config.read().unwrap().tz_off_s as i64;
-                            if let Err(e) = recorder::spawn_afe_pipeline(
-                                mic,
-                                Arc::new(afe),
-                                has_storage,
-                                tz_for_rec,
-                            ) {
-                                log::warn!("spawn AFE pipeline failed: {e:#}");
-                            }
-                        }
-                        Err(e) => log::warn!("AFE init failed (recording disabled): {e:#}"),
-                    }
-                }
-            },
-            Err(e) => log::warn!("Mic init failed: {e:#}"),
-        }
-    }
 
     // ---- Battery ADC(GPIO4)----
     log::info!("Init battery ADC on GPIO4");
@@ -544,20 +466,6 @@ fn main() -> anyhow::Result<()> {
             }
 
             // ---- 硬件总览 snapshot:供 /api/system 读 ----
-            // 存储信息 + 录音索引快照
-            let (storage_kind, storage_used, storage_total) = if let Some(sd) = &_sd {
-                let (u, t) = sd.stats();
-                ("sd", u as u64, t as u64)
-            } else if let Some(s) = &_storage {
-                let (u, t) = s.stats();
-                ("spiffs", u as u64, t as u64)
-            } else {
-                ("none", 0, 0)
-            };
-            let (rec_count, rec_bytes) = {
-                let (_, total, total_size) = recorder::index_list_paged(0, 0);
-                (total as u32, total_size)
-            };
             let snap = system_http::SystemSnapshot {
                 fw: state.fw_version.to_string(),
                 idf: state.idf_version.to_string(),
@@ -575,11 +483,6 @@ fn main() -> anyhow::Result<()> {
                 app_size: state.app_part_size,
                 app_used: state.app_used,
                 app_part_addr: flash_stats.app_part_addr,
-                storage_kind: storage_kind.to_string(),
-                storage_used,
-                storage_total,
-                recordings_count: rec_count,
-                recordings_bytes: rec_bytes,
                 temp_c: state.temperature_c,
                 humid_pct: state.humidity_pct,
                 chip_temp_c: state.chip_temp_c,

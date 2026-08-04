@@ -511,14 +511,11 @@ pub fn start(
         },
     )?;
 
-    // ---- 录音文件浏览(/recordings.html + /api/recordings + /api/recording) ----
-    crate::net::recordings_http::register(&mut server)?;
-
     // ---- 硬件总览页(/system.html + /api/system) ----
     crate::net::system_http::register(&mut server, system_shared)?;
 
     log::info!(
-        "Screen HTTP server up on http://<ip>/  (/, /settings, /logs.html, /logs.json, /screen.bmp, /next, /api/config, /api/wifi{{,/remove}}, /api/wifi_forget, /api/reboot, /recordings.html, /api/recording{{s}}, /system.html, /api/system)"
+        "Screen HTTP server up on http://<ip>/  (/, /settings, /logs.html, /logs.json, /screen.bmp, /next, /api/config, /api/wifi{{,/remove}}, /api/wifi_forget, /api/reboot, /system.html, /api/system)"
     );
     Ok(server)
 }

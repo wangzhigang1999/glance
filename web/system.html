@@ -117,7 +117,6 @@
                 <div class="ml-auto flex gap-1.5 sm:gap-2 flex-wrap">
                     <a href="/" class="btn" title="Home"><i class="fa-solid fa-house"></i><span class="hidden sm:inline">Home</span></a>
                     <a href="/settings" class="btn" title="Settings"><i class="fa-solid fa-gear"></i><span class="hidden sm:inline">Settings</span></a>
-                    <a href="/recordings.html" class="btn" title="Recordings"><i class="fa-solid fa-microphone"></i><span class="hidden sm:inline">Recordings</span></a>
                     <a href="/logs.html" class="btn" title="Logs"><i class="fa-solid fa-file-lines"></i><span class="hidden sm:inline">Logs</span></a>
                     <button id="refresh" class="btn" title="Refresh"><i class="fa-solid fa-rotate"></i><span class="hidden sm:inline">Refresh</span></button>
                 </div>
@@ -157,15 +156,6 @@
                     <div class="bar" id="flash-bar-wrap"><div id="flash-bar" style="width:0%"></div></div>
                     <div class="kv mt-2"><span>App image used</span><span id="flash-used">—</span></div>
                     <div class="kv"><span>App offset</span><span id="flash-addr">—</span></div>
-                </div>
-
-                <!-- Storage -->
-                <div class="card">
-                    <h3><i class="fa-solid fa-hard-drive"></i>Storage <span id="store-kind-badge" class="ml-auto text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/10 dark:bg-white/10">—</span></h3>
-                    <div class="kv"><span>Used / Total</span><span id="store-usage">—</span></div>
-                    <div class="bar" id="store-bar-wrap"><div id="store-bar" style="width:0%"></div></div>
-                    <div class="kv mt-2"><span>Recordings</span><span id="store-recs">—</span></div>
-                    <div class="kv"><span>Recordings size</span><span id="store-recs-bytes">—</span></div>
                 </div>
 
                 <!-- Sensors -->
@@ -283,21 +273,6 @@
                     s.app_size > 0 ? ((s.app_used / s.app_size) * 100).toFixed(1) : 0
                 }%)`;
                 $("flash-addr").textContent = "0x" + (s.app_part_addr || 0).toString(16);
-
-                // Storage
-                const kind = s.storage_kind || "none";
-                $("store-kind-badge").textContent = kind.toUpperCase();
-                $("store-kind-badge").className =
-                    "ml-auto text-[10px] font-mono px-1.5 py-0.5 rounded " +
-                    (kind === "sd"
-                        ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
-                        : kind === "spiffs"
-                        ? "bg-amber-500/20 text-amber-700 dark:text-amber-300"
-                        : "bg-black/10 dark:bg-white/10");
-                $("store-usage").textContent = `${fmtBytes(s.storage_used)} / ${fmtBytes(s.storage_total)}`;
-                setBar("store-bar", "store-bar-wrap", s.storage_used, s.storage_total);
-                $("store-recs").textContent = (s.recordings_count ?? 0) + " files";
-                $("store-recs-bytes").textContent = fmtBytes(s.recordings_bytes);
 
                 // Sensors
                 $("sens-t").textContent = s.temp_c != null ? s.temp_c.toFixed(2) + " °C" : "—";
