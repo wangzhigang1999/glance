@@ -10,7 +10,13 @@
 //! - ntp.tencent.com      腾讯云
 //! - cn.pool.ntp.org      NTP Pool 中国镜像
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use anyhow::Result;
+static SYNCED: AtomicBool = AtomicBool::new(false);
+pub fn take_sync() -> bool {
+    SYNCED.swap(false, Ordering::AcqRel)
+}
 use esp_idf_svc::sntp::{EspSntp, OperatingMode, SntpConf, SyncMode};
 
 pub struct Sntp {
@@ -29,7 +35,9 @@ impl Sntp {
             operating_mode: OperatingMode::Poll,
             sync_mode: SyncMode::Immediate,
         };
-        let inner = EspSntp::new(&conf)?;
+        let inner = EspSntp::new_with_callback(&conf, |_| {
+            SYNCED.store(true, Ordering::Release);
+        })?;
         log::info!("SNTP started with {:?}", conf.servers);
         Ok(Self { _inner: inner })
     }

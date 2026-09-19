@@ -31,7 +31,7 @@ use esp_idf_svc::{
 };
 
 use crate::{
-    config::{clamp, ConfigStore, SharedConfig},
+    config::{clamp, patch::apply_json_patch, ConfigStore, SharedConfig},
     display::framebuffer::{BUF_LEN, HEIGHT, WIDTH},
     net::{
         creds::{CredsStore, MAX_SLOTS as WIFI_MAX_SLOTS},
@@ -62,7 +62,11 @@ macro_rules! read_body {
                         break;
                     }
                 }
-                Err(_) => break,
+                Err(_) => {
+                    $req.into_status_response(400)?
+                        .write_all(b"incomplete request body")?;
+                    return Ok(());
+                }
             }
         }
         &buf_ref[..total]
@@ -87,6 +91,25 @@ pub fn start(
         ..Default::default()
     };
     let mut server = EspHttpServer::new(&srv_cfg)?;
+    for (path, css) in [
+        ("/live.css", include_str!("../../web/live.css")),
+        ("/settings.css", include_str!("../../web/settings.css")),
+        ("/logs.css", include_str!("../../web/logs.css")),
+        ("/system.css", include_str!("../../web/system.css")),
+    ] {
+        server.fn_handler(path, Method::Get, move |req| -> Result<(), anyhow::Error> {
+            req.into_response(
+                200,
+                Some("OK"),
+                &[
+                    ("Content-Type", "text/css; charset=utf-8"),
+                    ("Cache-Control", "no-cache"),
+                ],
+            )?
+            .write_all(css.as_bytes())?;
+            Ok(())
+        })?;
+    }
 
     server.fn_handler("/", Method::Get, |req| -> Result<(), anyhow::Error> {
         let mut resp = req.into_ok_response()?;
@@ -108,7 +131,7 @@ pub fn start(
                 heap_min_ever: u32,
                 psram_free: u32,
                 psram_total: u32,
-                main_stack_hwm_bytes: u32,
+                http_stack_hwm_bytes: u32,
                 reset_reason: &'static str,
                 flash_total: u32,
                 app_part_addr: u32,
@@ -121,7 +144,7 @@ pub fn start(
                 heap_min_ever: sys.heap_min_ever as u32,
                 psram_free: sys.psram_free as u32,
                 psram_total: sys.psram_total as u32,
-                main_stack_hwm_bytes: sys.main_stack_hwm_bytes,
+                http_stack_hwm_bytes: sys.main_stack_hwm_bytes,
                 reset_reason: sys.reset_reason,
                 flash_total: flash.flash_total,
                 app_part_addr: flash.app_part_addr,
@@ -178,6 +201,17 @@ pub fn start(
         "/next",
         Method::Post,
         move |req| -> Result<(), anyhow::Error> {
+            if req.header("Sec-Fetch-Site") == Some("cross-site")
+                || req.header("Origin").is_some_and(|origin| {
+                    let host = req.header("Host").unwrap_or("");
+                    origin != format!("http://{host}")
+                })
+            {
+                req.into_status_response(403)?
+                    .write_all(b"cross-origin request denied")?;
+                return Ok(());
+            }
+
             next_for_handler.store(true, Ordering::Relaxed);
             let mut resp = req.into_ok_response()?;
             resp.write_all(b"ok")?;
@@ -214,15 +248,36 @@ pub fn start(
         "/api/config",
         Method::Post,
         move |mut req| -> Result<(), anyhow::Error> {
+            if req.header("Sec-Fetch-Site") == Some("cross-site")
+                || req.header("Origin").is_some_and(|origin| {
+                    let host = req.header("Host").unwrap_or("");
+                    origin != format!("http://{host}")
+                })
+            {
+                req.into_status_response(403)?
+                    .write_all(b"cross-origin request denied")?;
+                return Ok(());
+            }
+
             // 读 body,限制 4KB 防溢出
             let mut buf = [0u8; 4096];
             let body_bytes = read_body!(req, buf);
+            if body_bytes.len() == 4096 {
+                req.into_status_response(413)?
+                    .write_all(b"request too large")?;
+                return Ok(());
+            }
             let body = std::str::from_utf8(body_bytes).unwrap_or("");
             let mut updated = {
                 let c = cfg_for_post.read().unwrap();
                 c.clone()
             };
-            apply_json_patch(&mut updated, body);
+            if apply_json_patch(&mut updated, body).is_err() {
+                req.into_status_response(400)?.write_all(
+                    b"{\"ok\":false,\"error\":\"invalid configuration JSON or GitHub username\"}",
+                )?;
+                return Ok(());
+            }
             clamp(&mut updated);
 
             // 持久化
@@ -260,6 +315,17 @@ pub fn start(
         "/api/whoami",
         Method::Post,
         move |mut req| -> Result<(), anyhow::Error> {
+            if req.header("Sec-Fetch-Site") == Some("cross-site")
+                || req.header("Origin").is_some_and(|origin| {
+                    let host = req.header("Host").unwrap_or("");
+                    origin != format!("http://{host}")
+                })
+            {
+                req.into_status_response(403)?
+                    .write_all(b"cross-origin request denied")?;
+                return Ok(());
+            }
+
             let mut buf = [0u8; 512];
             let body_bytes = read_body!(req, buf);
             let body = std::str::from_utf8(body_bytes).unwrap_or("");
@@ -361,6 +427,17 @@ pub fn start(
         "/api/wifi",
         Method::Post,
         move |mut req| -> Result<(), anyhow::Error> {
+            if req.header("Sec-Fetch-Site") == Some("cross-site")
+                || req.header("Origin").is_some_and(|origin| {
+                    let host = req.header("Host").unwrap_or("");
+                    origin != format!("http://{host}")
+                })
+            {
+                req.into_status_response(403)?
+                    .write_all(b"cross-origin request denied")?;
+                return Ok(());
+            }
+
             let mut buf = [0u8; 512];
             let body_bytes = read_body!(req, buf);
             let body = std::str::from_utf8(body_bytes).unwrap_or("");
@@ -408,6 +485,17 @@ pub fn start(
         "/api/wifi/remove",
         Method::Post,
         move |mut req| -> Result<(), anyhow::Error> {
+            if req.header("Sec-Fetch-Site") == Some("cross-site")
+                || req.header("Origin").is_some_and(|origin| {
+                    let host = req.header("Host").unwrap_or("");
+                    origin != format!("http://{host}")
+                })
+            {
+                req.into_status_response(403)?
+                    .write_all(b"cross-origin request denied")?;
+                return Ok(());
+            }
+
             let mut buf = [0u8; 256];
             let body_bytes = read_body!(req, buf);
             let body = std::str::from_utf8(body_bytes).unwrap_or("");
@@ -441,6 +529,17 @@ pub fn start(
         "/api/wifi_forget",
         Method::Post,
         move |req| -> Result<(), anyhow::Error> {
+            if req.header("Sec-Fetch-Site") == Some("cross-site")
+                || req.header("Origin").is_some_and(|origin| {
+                    let host = req.header("Host").unwrap_or("");
+                    origin != format!("http://{host}")
+                })
+            {
+                req.into_status_response(403)?
+                    .write_all(b"cross-origin request denied")?;
+                return Ok(());
+            }
+
             if let Err(e) = creds_for_forget.clear() {
                 log::warn!("wifi_forget: clear NVS failed: {e:#}");
                 let mut resp = req.into_status_response(500)?;
@@ -499,6 +598,17 @@ pub fn start(
         "/api/reboot",
         Method::Post,
         |req| -> Result<(), anyhow::Error> {
+            if req.header("Sec-Fetch-Site") == Some("cross-site")
+                || req.header("Origin").is_some_and(|origin| {
+                    let host = req.header("Host").unwrap_or("");
+                    origin != format!("http://{host}")
+                })
+            {
+                req.into_status_response(403)?
+                    .write_all(b"cross-origin request denied")?;
+                return Ok(());
+            }
+
             let mut resp = req.into_ok_response()?;
             resp.write_all(b"{\"ok\":true}")?;
             drop(resp);
@@ -589,7 +699,13 @@ fn github_whoami(token: &str) -> Result<String> {
     loop {
         match conn.read(&mut chunk) {
             Ok(0) => break,
-            Ok(n) => body.extend_from_slice(&chunk[..n]),
+            Ok(n) => {
+                anyhow::ensure!(
+                    body.len() + n <= 32 * 1024,
+                    "GitHub user response too large"
+                );
+                body.extend_from_slice(&chunk[..n]);
+            }
             Err(e) => return Err(anyhow!("read: {e:?}")),
         }
     }
@@ -656,79 +772,6 @@ fn emit_config_json(c: &crate::config::RuntimeConfig, mask_token: bool) -> Strin
         splash_flash: c.splash_flash,
     };
     serde_json::to_string(&view).unwrap_or_else(|_| "{}".to_string())
-}
-
-/// 入站 patch:所有字段 Option,缺省表示不更新。脱敏 token(`***...`)视为不更新。
-#[derive(serde::Deserialize, Default)]
-struct ConfigPatch {
-    gh_user: Option<String>,
-    gh_token: Option<String>,
-    gh_refresh_s: Option<u32>,
-    gh_err_s: Option<u32>,
-    market_url: Option<String>,
-    market_token: Option<String>,
-    market_refresh_s: Option<u32>,
-    sensor_refresh_s: Option<u32>,
-    auto_rotate: Option<bool>,
-    auto_rotate_s: Option<u32>,
-    temp_off_c: Option<f32>,
-    humid_off_pct: Option<f32>,
-    tz_off_s: Option<i32>,
-    splash_flash: Option<u32>,
-}
-
-fn apply_json_patch(c: &mut crate::config::RuntimeConfig, body: &str) {
-    let p: ConfigPatch = serde_json::from_str(body).unwrap_or_default();
-    if let Some(v) = p.gh_user {
-        c.gh_user = v;
-    }
-    if let Some(v) = p.gh_token {
-        if v.is_empty() {
-            c.gh_token.clear();
-        } else if !v.starts_with("***") {
-            c.gh_token = v;
-        }
-    }
-    if let Some(v) = p.gh_refresh_s {
-        c.gh_refresh_s = v;
-    }
-    if let Some(v) = p.gh_err_s {
-        c.gh_err_s = v;
-    }
-    if let Some(v) = p.market_url {
-        c.market_url = v;
-    }
-    if let Some(v) = p.market_token {
-        if v.is_empty() {
-            c.market_token.clear();
-        } else if !v.starts_with("***") {
-            c.market_token = v;
-        }
-    }
-    if let Some(v) = p.market_refresh_s {
-        c.market_refresh_s = v;
-    }
-    if let Some(v) = p.sensor_refresh_s {
-        c.sensor_refresh_s = v;
-    }
-    if let Some(v) = p.auto_rotate {
-        c.auto_rotate = v;
-    }
-    if let Some(v) = p.auto_rotate_s {
-        c.auto_rotate_s = v;
-    }
-    if let Some(v) = p.temp_off_c {
-        c.temp_off_c = v;
-    }
-    if let Some(v) = p.humid_off_pct {
-        c.humid_off_pct = v;
-    }
-    if let Some(v) = p.tz_off_s {
-        c.tz_off_s = v;
-    }
-    if let Some(v) = p.splash_flash {
-        c.splash_flash = v;
-    }
 }
 
 const SETTINGS_HTML: &str = include_str!("../../web/settings.html");

@@ -25,3 +25,5 @@ pub use prov_ap::Provisioner;
 pub use sntp::Sntp;
 pub use time::{format_local_date, format_local_hms};
 pub use wifi::{WifiCreds, WifiManager};
+
+pub mod outbox;

@@ -34,15 +34,22 @@ impl Shtc3 {
         drv.write(ADDR, &CMD_WAKEUP, 100).context("wakeup")?;
         sleep(Duration::from_micros(240));
 
-        drv.write(ADDR, &CMD_MEASURE_TFIRST, 100)
-            .context("measure cmd")?;
-        sleep(Duration::from_millis(15));
-
-        let mut buf = [0u8; 6];
-        drv.read(ADDR, &mut buf, 100).context("read raw")?;
-
+        let result = (|| -> Result<[u8; 6]> {
+            drv.write(ADDR, &CMD_MEASURE_TFIRST, 100)
+                .context("measure cmd")?;
+            sleep(Duration::from_millis(15));
+            let mut buf = [0u8; 6];
+            drv.read(ADDR, &mut buf, 100).context("read raw")?;
+            anyhow::ensure!(
+                crate::reliability::crc8(&buf[..2]) == buf[2]
+                    && crate::reliability::crc8(&buf[3..5]) == buf[5],
+                "SHTC3 CRC mismatch"
+            );
+            Ok(buf)
+        })();
         let _ = drv.write(ADDR, &CMD_SLEEP, 100);
         drop(drv);
+        let buf = result?;
 
         let t_raw = u16::from_be_bytes([buf[0], buf[1]]);
         let rh_raw = u16::from_be_bytes([buf[3], buf[4]]);

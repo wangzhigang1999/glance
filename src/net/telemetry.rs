@@ -28,10 +28,10 @@ struct Credentials {
     password: String,
     device_id: String,
 }
-#[derive(Default, Serialize)]
+#[derive(Default, Clone, Serialize)]
 pub struct Status {
     configured: bool,
-    connected: bool,
+    pub connected: bool,
     queued_climate: usize,
     pending_climate_batch: bool,
     climate_batch_interval_s: u64,
@@ -39,19 +39,14 @@ pub struct Status {
     broker_acks: u64,
     climate_dropped: u64,
     reconnects: u64,
-    error: String,
+    pub error: String,
+    pub storage_error: String,
+    pub queued_weight: usize,
+    pub weight_queue_full: bool,
+    pub last_ack_unix: Option<i64>,
 }
 pub type SharedTelemetry = Arc<Mutex<Status>>;
-#[derive(Clone, Serialize, Deserialize)]
-struct Pending {
-    key: String,
-    payload: String,
-}
-#[derive(Default, Serialize, Deserialize)]
-struct Durable {
-    seen: Vec<String>,
-    pending: Option<Pending>,
-}
+use super::outbox::{Durable, Pending, QUEUE_LIMIT};
 enum Event {
     Connected,
     Disconnected,
@@ -95,11 +90,22 @@ pub fn spawn(
         .name("telemetry".into())
         .stack_size(8192)
         .spawn(move || {
-            if let Err(e) = run(partition, system, scale, worker_output.clone()) {
-                let mut s = worker_output.lock().unwrap();
-                s.connected = false;
-                s.error = format!("{e:#}");
-                log::error!("Telemetry worker stopped: {e:#}");
+            loop {
+                match run(
+                    partition.clone(),
+                    system.clone(),
+                    scale.clone(),
+                    worker_output.clone(),
+                ) {
+                    Ok(()) => break, // Unconfigured device: no credentials, no network attempts.
+                    Err(e) => {
+                        let mut s = worker_output.lock().unwrap();
+                        s.connected = false;
+                        s.error = format!("Initialization retry: {e:#}");
+                        log::error!("Telemetry initialization retry: {e:#}");
+                    }
+                }
+                std::thread::sleep(Duration::from_secs(30));
             }
         })
     {
@@ -125,12 +131,15 @@ fn run(
     );
     status.lock().unwrap().configured = true;
     let nvs = EspNvs::new(partition, "telemetry", true)?;
-    let mut bytes = vec![0u8; 4096];
+    let mut bytes = vec![0u8; 16384];
     let mut durable: Durable = match nvs.get_blob("outbox", &mut bytes)? {
         Some(data) => serde_json::from_slice(data)?,
         None => Durable::default(),
     };
     drop(bytes);
+    let mut dirty = false;
+    let mut storage_retry = Instant::now();
+    let mut last_sample_count = 0;
     let boot_id = random_id();
     let boot_unix = crate::net::time::unix_secs();
     let mut seq = 0;
@@ -146,7 +155,7 @@ fn run(
     let mut deadline = Instant::now();
     let mut retry_at = Instant::now();
     let mut backoff = 1u64;
-    let mut inflight: Option<(u32, bool, Instant)> = None;
+    let mut inflight: [Option<(u32, Instant)>; 2] = [None, None];
     loop {
         let now = Instant::now();
         let sys = system.read().unwrap().clone();
@@ -171,7 +180,7 @@ fn run(
                     });
                     if ts.is_some() {
                         if climate.len() == 60 {
-                            climate.pop_back();
+                            climate.pop_front();
                             status.lock().unwrap().climate_dropped += 1;
                         }
                         climate.push_back(sample(
@@ -187,7 +196,7 @@ fn run(
             }
         }
         // A complete stable record remains in the scale's NVS history until copied here.
-        if durable.pending.is_none() && scale.lock().unwrap().scanning {
+        if scale.lock().unwrap().scanning {
             let history = scale.lock().unwrap().history.clone();
             for (index, reading) in history.iter().enumerate() {
                 if !crate::scale::protocol::valid_weight(reading.kg) {
@@ -202,8 +211,11 @@ fn run(
                         reading.kg.to_bits()
                     )
                 };
-                if durable.seen.contains(&key) {
+                if durable.contains(&key) {
                     continue;
+                }
+                if durable.queue.len() >= QUEUE_LIMIT {
+                    break;
                 }
                 let payload = sample(
                     &boot_id,
@@ -220,21 +232,36 @@ fn run(
                     },
                     json!({"weight_kg":reading.kg,"weight_stable":true,"weight_removed":false}),
                 );
-                durable.pending = Some(Pending { key, payload });
-                persist(&nvs, &durable)?;
-                break;
+                durable.enqueue(Pending { key, payload });
+                dirty = true;
             }
         }
-        if now >= next_sample && sys.sample_count > 0 {
+        if durable.promote() {
+            dirty = true;
+        }
+        if dirty && now >= storage_retry {
+            match persist(&nvs, &durable) {
+                Ok(()) => {
+                    dirty = false;
+                    status.lock().unwrap().storage_error.clear();
+                }
+                Err(e) => {
+                    status.lock().unwrap().storage_error = format!("Outbox save retry: {e}");
+                }
+            }
+            storage_retry = now + Duration::from_secs(5);
+        }
+        if now >= next_sample && sys.sample_count > 0 && sys.sample_count != last_sample_count {
             if climate.len() == 60 {
                 // In-flight batch is separate; bound the next minute of samples.
-                climate.pop_back();
+                climate.pop_front();
                 status.lock().unwrap().climate_dropped += 1;
             }
-            climate.push_back(sample(&boot_id, &mut seq, sys.unix_secs.map(|t|t*1000), sys.uptime_s*1000,
+            climate.push_back(sample(&boot_id, &mut seq, sys.sampled_at.map(|t|t*1000), sys.sampled_uptime_ms,
                 json!({"temperature_c":sensor(sys.temp_c,-80.0,150.0),"humidity_pct":sensor(sys.humid_pct,0.0,100.0),
                        "chip_temperature_c":sys.chip_temp_c,"battery_mv":sys.battery_mv,"battery_pct":sys.battery_pct,
                        "wifi_rssi":sys.wifi_rssi,"heap_free":sys.heap_free,"usb_plugged":sys.usb_plugged})));
+            last_sample_count = sys.sample_count;
             next_sample = now + Duration::from_secs(60);
         }
         while let Ok(event) = rx.try_recv() {
@@ -245,14 +272,23 @@ fn run(
                     backoff = 1;
                     status.lock().unwrap().error.clear();
                     if let Some(c) = client.as_mut() {
-                        c.enqueue(
-                            &format!("{ROOT}/status"),
-                            QoS::AtLeastOnce,
-                            true,
-                            b"{\"online\":true}",
-                        )?;
-                        c.enqueue(&format!("{ROOT}/info"), QoS::AtLeastOnce, true,
-                            json!({"firmware":env!("CARGO_PKG_VERSION"),"boot_id":boot_id,"schema":1,"climate_interval_s":60,"weight_min_kg":1}).to_string().as_bytes())?;
+                        let announcement = (|| -> anyhow::Result<()> {
+                            c.enqueue(
+                                &format!("{ROOT}/status"),
+                                QoS::AtLeastOnce,
+                                true,
+                                b"{\"online\":true}",
+                            )?;
+                            c.enqueue(&format!("{ROOT}/info"), QoS::AtLeastOnce, true,
+                            json!({"firmware":env!("CARGO_PKG_VERSION"),"revision":env!("FIRMWARE_REVISION"),"boot_id":boot_id,"schema":1,"climate_interval_s":60,"weight_min_kg":1}).to_string().as_bytes())?;
+                            Ok(())
+                        })();
+                        if let Err(e) = announcement {
+                            status.lock().unwrap().error =
+                                format!("Announcement retry on reconnect: {e}");
+                            let _ =
+                                unsafe { esp_idf_svc::sys::esp_mqtt_client_disconnect(c.handle()) };
+                        }
                     }
                     log::info!("Telemetry WSS connected (TLS verified)");
                 }
@@ -267,22 +303,20 @@ fn run(
                     status.lock().unwrap().error = "Disconnected; retry pending".into();
                 }
                 Event::Published(id) => {
-                    if let Some((expected, weight, _)) = inflight {
-                        if id == expected {
-                            if weight {
-                                if let Some(p) = durable.pending.take() {
-                                    durable.seen.push(p.key);
-                                    if durable.seen.len() > 32 {
-                                        durable.seen.remove(0);
-                                    }
-                                    persist(&nvs, &durable)?;
-                                }
-                            } else {
-                                climate_batch = None;
-                            }
-                            inflight = None;
-                            status.lock().unwrap().broker_acks += 1;
+                    if let Some(index) = inflight
+                        .iter()
+                        .position(|v| v.is_some_and(|(expected, _)| id == expected))
+                    {
+                        if index == 0 {
+                            durable.acknowledge();
+                            dirty = true;
+                        } else {
+                            climate_batch = None;
                         }
+                        inflight[index] = None;
+                        let mut s = status.lock().unwrap();
+                        s.broker_acks += 1;
+                        s.last_ack_unix = crate::net::time::unix_secs();
                     }
                 }
             }
@@ -325,21 +359,27 @@ fn run(
                     }),
                     ..Default::default()
                 };
-                client = Some(EspMqttClient::new_cb(
-                    &credentials.uri,
-                    &conf,
-                    move |event| {
-                        let e = match event.payload() {
-                            EventPayload::Connected(_) => Some(Event::Connected),
-                            EventPayload::Disconnected => Some(Event::Disconnected),
-                            EventPayload::Published(id) => Some(Event::Published(id)),
-                            _ => None,
-                        };
-                        if let Some(e) = e {
-                            let _ = sender.send(e);
-                        }
-                    },
-                )?);
+                let created = EspMqttClient::new_cb(&credentials.uri, &conf, move |event| {
+                    let e = match event.payload() {
+                        EventPayload::Connected(_) => Some(Event::Connected),
+                        EventPayload::Disconnected => Some(Event::Disconnected),
+                        EventPayload::Published(id) => Some(Event::Published(id)),
+                        _ => None,
+                    };
+                    if let Some(e) = e {
+                        let _ = sender.send(e);
+                    }
+                });
+                match created {
+                    Ok(c) => client = Some(c),
+                    Err(e) => {
+                        status.lock().unwrap().error = format!("MQTT initialization retry: {e}");
+                        retry_at = now + Duration::from_secs(backoff);
+                        backoff = (backoff * 2).min(60);
+                        std::thread::sleep(Duration::from_millis(200));
+                        continue;
+                    }
+                }
             }
             connecting = true;
             deadline = now + Duration::from_secs(20);
@@ -352,38 +392,54 @@ fn run(
         }
         // ESP-MQTT retains QoS1 messages across reconnects. Only rebuild after a long
         // unacknowledged interval, keeping the original serialized payload and ID.
-        if inflight.is_some_and(|(_, _, sent)| sent.elapsed() > Duration::from_secs(180)) {
+        if inflight
+            .iter()
+            .any(|v| v.is_some_and(|(_, sent)| sent.elapsed() > Duration::from_secs(180)))
+        {
             client = None;
             connected = false;
             connecting = false;
-            inflight = None;
+            inflight = [None, None];
             while rx.try_recv().is_ok() {}
             retry_at = now + Duration::from_secs(1);
         }
         if climate_batch.is_none() && now >= next_batch {
-            climate_batch =
-                super::telemetry_batch::take_batch(&mut climate).map_err(anyhow::Error::msg)?;
+            match super::telemetry_batch::take_batch(&mut climate) {
+                Ok(batch) => climate_batch = batch,
+                Err(e) => {
+                    climate.pop_front();
+                    let mut s = status.lock().unwrap();
+                    s.climate_dropped += 1;
+                    s.error = e.into();
+                }
+            }
         }
-        if connected && inflight.is_none() {
-            let pending = durable
-                .pending
-                .as_ref()
-                .map(|p| (true, p.payload.as_str()))
-                .or_else(|| climate_batch.as_ref().map(|p| (false, p.as_str())));
-            if let (Some((weight, payload)), Some(c)) = (pending, client.as_mut()) {
-                match c.enqueue(
-                    &format!("{ROOT}/telemetry"),
-                    QoS::AtLeastOnce,
-                    false,
-                    payload.as_bytes(),
-                ) {
-                    Ok(id) => {
-                        inflight = Some((id, weight, Instant::now()));
-                        if !weight {
-                            next_batch = Instant::now() + Duration::from_secs(60);
+        if connected {
+            // Separate QoS1 slots: a slow climate PUBACK cannot block a new weighing.
+            for (index, slot) in inflight.iter_mut().enumerate() {
+                if slot.is_some() || (index == 0 && dirty) {
+                    continue;
+                }
+                let payload = if index == 0 {
+                    durable.pending.as_ref().map(|p| p.payload.as_str())
+                } else {
+                    climate_batch.as_deref()
+                };
+                if let (Some(payload), Some(c)) = (payload, client.as_mut()) {
+                    match c.enqueue(
+                        &format!("{ROOT}/telemetry"),
+                        QoS::AtLeastOnce,
+                        false,
+                        payload.as_bytes(),
+                    ) {
+                        Ok(id) => {
+                            *slot = Some((id, Instant::now()));
+                            if index == 1 {
+                                next_batch = Instant::now() + Duration::from_secs(60);
+                            }
                         }
+                        Err(e) => status.lock().unwrap().error = format!("Enqueue: {e}"),
                     }
-                    Err(e) => status.lock().unwrap().error = format!("Enqueue: {e}"),
                 }
             }
         }
@@ -394,6 +450,8 @@ fn run(
             s.pending_climate_batch = climate_batch.is_some();
             s.climate_batch_interval_s = 60;
             s.pending_weight = durable.pending.is_some();
+            s.weight_queue_full = durable.queue.len() >= QUEUE_LIMIT;
+            s.queued_weight = durable.queue.len() + usize::from(durable.pending.is_some());
         }
 
         std::thread::sleep(Duration::from_millis(200));

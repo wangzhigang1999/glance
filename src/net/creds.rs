@@ -30,6 +30,15 @@ impl CredsStore {
 
     /// 读所有 slot 里的有效凭据,按 slot 序返回(最新在前)。
     pub fn load_all(&self) -> Result<Vec<WifiCreds>> {
+        let mut bytes = vec![0u8; 2048];
+        if let Some(data) = self.nvs.get_blob("list_v1", &mut bytes)? {
+            let list: Vec<(String, String)> = serde_json::from_slice(data)?;
+            anyhow::ensure!(list.len() <= MAX_SLOTS, "Invalid Wi-Fi list length");
+            return list
+                .into_iter()
+                .map(|(s, p)| WifiCreds::new(&s, &p))
+                .collect();
+        }
         let mut out: Vec<WifiCreds> = Vec::with_capacity(MAX_SLOTS);
         for slot in 0..MAX_SLOTS {
             if let Some(c) = self.read_slot(slot)? {
@@ -67,9 +76,10 @@ impl CredsStore {
 
     /// 清全部 slot(Switch WiFi 用)。
     pub fn clear(&self) -> Result<()> {
+        self.write_all(&[])?;
         for slot in 0..MAX_SLOTS {
-            let _ = self.nvs.remove(SSID_KEYS[slot]);
-            let _ = self.nvs.remove(PWD_KEYS[slot]);
+            let _ = self.nvs.remove(SSID_KEYS[slot])?;
+            let _ = self.nvs.remove(PWD_KEYS[slot])?;
         }
         log::warn!("all wifi creds cleared from NVS");
         Ok(())
@@ -88,21 +98,13 @@ impl CredsStore {
         }
     }
 
-    fn write_slot(&self, slot: usize, c: &WifiCreds) -> Result<()> {
-        self.nvs.set_str(SSID_KEYS[slot], c.ssid.as_str())?;
-        self.nvs.set_str(PWD_KEYS[slot], c.password.as_str())?;
-        Ok(())
-    }
-
-    /// 按 list 顺序写 slot 0..N,尾部多余 slot 清掉防残留。
+    /// Persist the entire list atomically; legacy keys are only a migration fallback.
     fn write_all(&self, list: &[WifiCreds]) -> Result<()> {
-        for (i, c) in list.iter().enumerate() {
-            self.write_slot(i, c)?;
-        }
-        for slot in list.len()..MAX_SLOTS {
-            let _ = self.nvs.remove(SSID_KEYS[slot]);
-            let _ = self.nvs.remove(PWD_KEYS[slot]);
-        }
+        let list: Vec<_> = list
+            .iter()
+            .map(|c| (c.ssid.as_str(), c.password.as_str()))
+            .collect();
+        self.nvs.set_blob("list_v1", &serde_json::to_vec(&list)?)?;
         Ok(())
     }
 }

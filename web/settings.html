@@ -4,78 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Curiosity Lab · Settings</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
-    />
-    <link
-      rel="stylesheet"
-      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"
-      crossorigin="anonymous"
-      referrerpolicy="no-referrer"
-    />
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-      tailwind.config = {
-        darkMode: "media",
-        theme: {
-          extend: {
-            colors: {
-              paper: { DEFAULT: "#f8f7f4", dark: "#12100b" },
-              ink: { DEFAULT: "#252119", dark: "#efeee9" },
-              line: { DEFAULT: "#dcd9cf", dark: "#36322a" },
-              card: { DEFAULT: "#ffffff", dark: "#1c1911" },
-              accent: "#bc3908",
-              peach: "#fbd7a5",
-            },
-            fontFamily: {
-              sans: ["Inter", "-apple-system", "system-ui", "sans-serif"],
-              mono: [
-                '"JetBrains Mono"',
-                "ui-monospace",
-                "Consolas",
-                "monospace",
-              ],
-            },
-          },
-        },
-      };
-    </script>
-    <style type="text/tailwindcss">
-      @layer components {
-        .input {
-          @apply w-full px-3 py-2 rounded-md border border-line dark:border-line-dark bg-card dark:bg-card-dark text-sm font-mono focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent/60 transition;
-          /* <input> 默认 size=20 给约 280px intrinsic min-width,在 flex/grid 子项里会撑爆容器 */
-          min-width: 0;
-        }
-        .label {
-          @apply block text-[11px] uppercase tracking-wider text-ink/60 dark:text-ink-dark/60 mb-1.5 font-sans;
-        }
-        .hint {
-          @apply text-[11px] text-ink/50 dark:text-ink-dark/50 mt-1 font-sans;
-        }
-        .card {
-          @apply rounded-xl border border-line dark:border-line-dark bg-card dark:bg-card-dark p-5 sm:p-6 shadow-sm;
-        }
-        .card h2 {
-          @apply flex items-center gap-2 text-sm font-semibold tracking-tight uppercase text-ink/80 dark:text-ink-dark/80 mb-4;
-        }
-        .card h2 i {
-          @apply text-accent;
-        }
-        .btn {
-          @apply inline-flex items-center gap-2 px-4 py-2 rounded-md border border-line dark:border-line-dark text-sm hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer;
-        }
-        .btn-primary {
-          @apply inline-flex items-center gap-2 px-4 py-2 rounded-md bg-accent text-white text-sm font-medium shadow-sm hover:brightness-110 active:translate-y-px transition cursor-pointer;
-        }
-        .btn-danger {
-          @apply inline-flex items-center gap-2 px-4 py-2 rounded-md border border-accent/40 text-accent text-sm hover:bg-accent/10 transition cursor-pointer;
-        }
-      }
-    </style>
+    <link rel="stylesheet" href="/settings.css" />
   </head>
   <body
     class="min-h-full bg-paper dark:bg-paper-dark text-ink dark:text-ink-dark font-sans antialiased"

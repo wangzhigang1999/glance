@@ -127,6 +127,11 @@ impl WifiManager {
         Ok(out)
     }
 
+    pub fn reconnect(&mut self) -> Result<()> {
+        self.wifi.wifi_mut().connect().context("reconnect Wi-Fi")?;
+        Ok(())
+    }
+
     pub fn is_connected(&self) -> bool {
         self.wifi.is_connected().unwrap_or(false)
     }

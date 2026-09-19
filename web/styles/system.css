@@ -1,0 +1,209 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-line dark:border-line-dark text-sm hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer whitespace-nowrap;
+  }
+  .card {
+    @apply bg-card dark:bg-card-dark border border-line dark:border-line-dark rounded-lg p-4;
+    overflow: hidden; /* 兜底,防内部计算溢出外泄 */
+  }
+  .card h3 {
+    @apply text-xs font-semibold uppercase tracking-wider opacity-60 mb-3 flex items-center gap-1.5;
+  }
+  /* kv:窄屏 label/value 上下两行(避免 flex/grid 在 ≤480 时算崩);
+                   ≥480 才回到一行 label 左 / value 右的紧凑布局 */
+  .kv {
+    display: block;
+    padding: 0.25rem 0;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    overflow: hidden;
+  }
+  .kv > span:first-child {
+    display: block;
+    opacity: 0.6;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .kv > span:last-child {
+    display: block;
+    font-family: "JetBrains Mono", ui-monospace, Consolas, monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  @media (min-width: 480px) {
+    .kv {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 0.75rem;
+    }
+    .kv > span:first-child {
+      display: inline;
+      font-size: 0.875rem;
+      text-transform: none;
+      letter-spacing: normal;
+      flex-shrink: 0;
+    }
+    .kv > span:last-child {
+      display: inline;
+      text-align: right;
+      min-width: 0;
+    }
+  }
+  .bar {
+    @apply h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden mt-1;
+  }
+  .bar > div {
+    @apply h-full bg-accent transition-all;
+  }
+  .bar-warn > div {
+    @apply bg-amber-500;
+  }
+  .bar-crit > div {
+    @apply bg-red-500;
+  }
+}
+
+.fa-solid,
+.fa-brands {
+  font-style: normal;
+  display: inline-block;
+  min-width: 1em;
+  text-align: center;
+}
+.fa-solid::before,
+.fa-brands::before {
+  content: "•";
+}
+.fa-pause::before {
+  content: "Ⅱ";
+}
+.fa-play::before {
+  content: "▶";
+}
+.fa-rotate-right::before {
+  content: "↻";
+}
+.fa-rotate::before {
+  content: "↻";
+}
+.fa-arrows-rotate::before {
+  content: "↻";
+}
+.fa-expand::before {
+  content: "⛶";
+}
+.fa-forward-step::before {
+  content: "›";
+}
+.fa-gear::before {
+  content: "⚙";
+}
+.fa-sliders::before {
+  content: "☷";
+}
+.fa-terminal::before {
+  content: "›_";
+}
+.fa-microchip::before {
+  content: "▣";
+}
+.fa-house::before {
+  content: "⌂";
+}
+.fa-wifi::before {
+  content: "◉";
+}
+.fa-floppy-disk::before {
+  content: "✓";
+}
+.fa-check::before {
+  content: "✓";
+}
+.fa-trash::before {
+  content: "×";
+}
+.fa-power-off::before {
+  content: "⏻";
+}
+.fa-eye::before {
+  content: "◉";
+}
+.fa-key::before {
+  content: "⚿";
+}
+.fa-circle-info::before {
+  content: "ⓘ";
+}
+.fa-clock::before {
+  content: "◷";
+}
+.fa-clock-rotate-left::before {
+  content: "◷";
+}
+.fa-temperature-half::before {
+  content: "♨";
+}
+.fa-droplet::before {
+  content: "◊";
+}
+.fa-github::before {
+  content: "GH";
+}
+.fa-arrow-left::before {
+  content: "←";
+}
+.fa-chevron-left::before {
+  content: "‹";
+}
+.fa-chevron-right::before {
+  content: "›";
+}
+.fa-display::before {
+  content: "▣";
+}
+.fa-desktop::before {
+  content: "▣";
+}
+.fa-download::before {
+  content: "↓";
+}
+.fa-sun::before {
+  content: "☼";
+}
+.fa-bolt::before {
+  content: "ϟ";
+}
+.fa-battery-full::before {
+  content: "▰";
+}
+.fa-circle::before {
+  content: "●";
+}
+.fa-xmark::before {
+  content: "×";
+}
+.fa-stop::before {
+  content: "■";
+}
+.fa-copy::before {
+  content: "▣";
+}
+.fa-magnifying-glass::before {
+  content: "⌕";
+}
+.fa-link::before {
+  content: "↗";
+}
+.fa-arrow-up-right-from-square::before {
+  content: "↗";
+}
+.fa-code::before {
+  content: "‹›";
+}

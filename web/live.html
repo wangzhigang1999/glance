@@ -4,64 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Curiosity Lab</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
-    />
-    <link
-      rel="stylesheet"
-      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"
-      crossorigin="anonymous"
-      referrerpolicy="no-referrer"
-    />
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-      tailwind.config = {
-        darkMode: "media",
-        theme: {
-          extend: {
-            colors: {
-              paper: { DEFAULT: "#f8f7f4", dark: "#12100b" },
-              ink: { DEFAULT: "#252119", dark: "#efeee9" },
-              line: { DEFAULT: "#dcd9cf", dark: "#36322a" },
-              card: { DEFAULT: "#ffffff", dark: "#1c1911" },
-              accent: "#bc3908",
-              peach: "#fbd7a5",
-            },
-            fontFamily: {
-              sans: ["Inter", "-apple-system", "system-ui", "sans-serif"],
-              mono: [
-                '"JetBrains Mono"',
-                "ui-monospace",
-                "Consolas",
-                "monospace",
-              ],
-            },
-          },
-        },
-      };
-    </script>
-    <style type="text/tailwindcss">
-      @layer components {
-        .btn {
-          @apply inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-line dark:border-line-dark text-sm hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer whitespace-nowrap;
-        }
-        .btn-primary {
-          @apply inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-accent text-white text-sm font-medium shadow-sm hover:brightness-110 active:translate-y-px transition cursor-pointer whitespace-nowrap;
-        }
-        .sel {
-          @apply px-2.5 py-1.5 rounded-md border border-line dark:border-line-dark bg-transparent text-sm hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer;
-        }
-        .kbd {
-          @apply ml-1 text-[10px] font-mono bg-black/10 dark:bg-white/10 px-1.5 py-0.5 rounded text-ink/60 dark:text-ink-dark/60;
-        }
-        .metric b {
-          @apply text-ink dark:text-ink-dark font-semibold;
-        }
-      }
-    </style>
+    <link rel="stylesheet" href="/live.css" />
     <style>
       #s {
         image-rendering: pixelated;
@@ -272,6 +215,10 @@
           if (timer) {
             clearTimeout(timer);
             timer = null;
+          }
+          if (document.hidden) {
+            timer = setTimeout(tick, 5000);
+            return;
           }
           if (paused) {
             setStatus("idle", "paused");

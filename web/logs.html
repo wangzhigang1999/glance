@@ -4,57 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Curiosity Lab · Logs</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
-    />
-    <link
-      rel="stylesheet"
-      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"
-      crossorigin="anonymous"
-      referrerpolicy="no-referrer"
-    />
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-      tailwind.config = {
-        darkMode: "media",
-        theme: {
-          extend: {
-            colors: {
-              paper: { DEFAULT: "#f8f7f4", dark: "#12100b" },
-              ink: { DEFAULT: "#252119", dark: "#efeee9" },
-              line: { DEFAULT: "#dcd9cf", dark: "#36322a" },
-              card: { DEFAULT: "#ffffff", dark: "#1c1911" },
-              accent: "#bc3908",
-            },
-            fontFamily: {
-              sans: ["Inter", "system-ui", "sans-serif"],
-              mono: [
-                '"JetBrains Mono"',
-                "ui-monospace",
-                "Consolas",
-                "monospace",
-              ],
-            },
-          },
-        },
-      };
-    </script>
-    <style type="text/tailwindcss">
-      @layer components {
-        .btn {
-          @apply inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-line dark:border-line-dark text-sm hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer whitespace-nowrap;
-        }
-        .sel {
-          @apply px-2.5 py-1.5 rounded-md border border-line dark:border-line-dark bg-transparent text-sm cursor-pointer;
-        }
-        .inp {
-          @apply px-2.5 py-1.5 rounded-md border border-line dark:border-line-dark bg-transparent text-sm flex-1 min-w-[120px] sm:max-w-[200px] focus:outline-none focus:ring-2 focus:ring-accent/40;
-        }
-      }
-    </style>
+    <link rel="stylesheet" href="/logs.css" />
     <style>
       #log {
         font-family: "JetBrains Mono", ui-monospace, Consolas, monospace;
@@ -287,6 +237,10 @@
         let firstFetch = true;
 
         async function poll() {
+          if (document.hidden) {
+            timer = setTimeout(poll, 5000);
+            return;
+          }
           if (inflight) return;
           inflight = true;
           try {

@@ -85,7 +85,9 @@ fn parse_response(body: &[u8]) -> Result<ContribData> {
             .map(|s| s.to_string())
             .unwrap_or_else(|| {
                 let s = serde_json::to_string(&errs).unwrap_or_default();
-                s[..s.len().min(200)].to_string()
+                let mut s = s;
+                crate::reliability::truncate_utf8(&mut s, 200);
+                s
             });
         return Err(anyhow!("GitHub: {}", msg));
     }

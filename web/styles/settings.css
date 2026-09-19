@@ -1,0 +1,173 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .input {
+    @apply w-full px-3 py-2 rounded-md border border-line dark:border-line-dark bg-card dark:bg-card-dark text-sm font-mono focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent/60 transition;
+    /* <input> 默认 size=20 给约 280px intrinsic min-width,在 flex/grid 子项里会撑爆容器 */
+    min-width: 0;
+  }
+  .label {
+    @apply block text-[11px] uppercase tracking-wider text-ink/60 dark:text-ink-dark/60 mb-1.5 font-sans;
+  }
+  .hint {
+    @apply text-[11px] text-ink/50 dark:text-ink-dark/50 mt-1 font-sans;
+  }
+  .card {
+    @apply rounded-xl border border-line dark:border-line-dark bg-card dark:bg-card-dark p-5 sm:p-6 shadow-sm;
+  }
+  .card h2 {
+    @apply flex items-center gap-2 text-sm font-semibold tracking-tight uppercase text-ink/80 dark:text-ink-dark/80 mb-4;
+  }
+  .card h2 i {
+    @apply text-accent;
+  }
+  .btn {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-md border border-line dark:border-line-dark text-sm hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer;
+  }
+  .btn-primary {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-md bg-accent text-white text-sm font-medium shadow-sm hover:brightness-110 active:translate-y-px transition cursor-pointer;
+  }
+  .btn-danger {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-md border border-accent/40 text-accent text-sm hover:bg-accent/10 transition cursor-pointer;
+  }
+}
+
+.fa-solid,
+.fa-brands {
+  font-style: normal;
+  display: inline-block;
+  min-width: 1em;
+  text-align: center;
+}
+.fa-solid::before,
+.fa-brands::before {
+  content: "•";
+}
+.fa-pause::before {
+  content: "Ⅱ";
+}
+.fa-play::before {
+  content: "▶";
+}
+.fa-rotate-right::before {
+  content: "↻";
+}
+.fa-rotate::before {
+  content: "↻";
+}
+.fa-arrows-rotate::before {
+  content: "↻";
+}
+.fa-expand::before {
+  content: "⛶";
+}
+.fa-forward-step::before {
+  content: "›";
+}
+.fa-gear::before {
+  content: "⚙";
+}
+.fa-sliders::before {
+  content: "☷";
+}
+.fa-terminal::before {
+  content: "›_";
+}
+.fa-microchip::before {
+  content: "▣";
+}
+.fa-house::before {
+  content: "⌂";
+}
+.fa-wifi::before {
+  content: "◉";
+}
+.fa-floppy-disk::before {
+  content: "✓";
+}
+.fa-check::before {
+  content: "✓";
+}
+.fa-trash::before {
+  content: "×";
+}
+.fa-power-off::before {
+  content: "⏻";
+}
+.fa-eye::before {
+  content: "◉";
+}
+.fa-key::before {
+  content: "⚿";
+}
+.fa-circle-info::before {
+  content: "ⓘ";
+}
+.fa-clock::before {
+  content: "◷";
+}
+.fa-clock-rotate-left::before {
+  content: "◷";
+}
+.fa-temperature-half::before {
+  content: "♨";
+}
+.fa-droplet::before {
+  content: "◊";
+}
+.fa-github::before {
+  content: "GH";
+}
+.fa-arrow-left::before {
+  content: "←";
+}
+.fa-chevron-left::before {
+  content: "‹";
+}
+.fa-chevron-right::before {
+  content: "›";
+}
+.fa-display::before {
+  content: "▣";
+}
+.fa-desktop::before {
+  content: "▣";
+}
+.fa-download::before {
+  content: "↓";
+}
+.fa-sun::before {
+  content: "☼";
+}
+.fa-bolt::before {
+  content: "ϟ";
+}
+.fa-battery-full::before {
+  content: "▰";
+}
+.fa-circle::before {
+  content: "●";
+}
+.fa-xmark::before {
+  content: "×";
+}
+.fa-stop::before {
+  content: "■";
+}
+.fa-copy::before {
+  content: "▣";
+}
+.fa-magnifying-glass::before {
+  content: "⌕";
+}
+.fa-link::before {
+  content: "↗";
+}
+.fa-arrow-up-right-from-square::before {
+  content: "↗";
+}
+.fa-code::before {
+  content: "‹›";
+}

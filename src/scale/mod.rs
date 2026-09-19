@@ -43,6 +43,8 @@ pub struct Snapshot {
     pub last_seen_unix: Option<i64>,
     pub rssi: Option<i32>,
     pub packets: u64,
+    pub dropped_packets: u64,
+    pub storage_pending: bool,
     pub history: Vec<Measurement>,
     pub error: String,
     #[serde(skip)]
@@ -96,6 +98,8 @@ fn run(
     let mut clock = mibeacon::Decoder::new();
     shared.lock().unwrap().clock.configured = clock.configured();
     let (sender, receiver) = mpsc::sync_channel(32);
+    let dropped = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let callback_dropped = dropped.clone();
     let (control_tx, control_rx) = mpsc::channel();
     gap.subscribe(move |event| match event {
         BleGapEvent::ScanParameterConfigured(status) => {
@@ -108,14 +112,21 @@ fn run(
             if result.bda.addr() == MAC =>
         {
             if let Some(reading) = result.ble_adv.and_then(protocol::advertisement) {
-                let _ = sender.try_send(Advertisement::Scale(reading, result.rssi, Instant::now()));
+                if sender
+                    .try_send(Advertisement::Scale(reading, result.rssi, Instant::now()))
+                    .is_err()
+                {
+                    callback_dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
             }
         }
         BleGapEvent::ScanResult(GapSearchEvent::InquiryResult(result))
             if result.bda.addr() == mibeacon::MAC =>
         {
             if let Some(adv) = result.ble_adv {
-                let _ = sender.try_send(Advertisement::Clock(adv.to_vec()));
+                if sender.try_send(Advertisement::Clock(adv.to_vec())).is_err() {
+                    callback_dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
             }
         }
         _ => {}
@@ -142,8 +153,36 @@ fn run(
     let boot = Instant::now();
     let mut session = protocol::Session::default();
     let mut replay_guard = true;
+    let mut pending_save: Option<Vec<Measurement>> = None;
+    let mut save_retry = Instant::now();
     loop {
-        let (reading, rssi, received) = match receiver.recv()? {
+        shared.lock().unwrap().dropped_packets =
+            dropped.load(std::sync::atomic::Ordering::Relaxed) as u64;
+        if pending_save.is_some() && Instant::now() >= save_retry {
+            let result = serde_json::to_vec(pending_save.as_ref().unwrap())
+                .map_err(anyhow::Error::from)
+                .and_then(|bytes| {
+                    nvs.set_blob("history", &bytes)
+                        .map(|_| ())
+                        .map_err(anyhow::Error::from)
+                });
+            match result {
+                Ok(()) => {
+                    pending_save = None;
+                    let mut s = shared.lock().unwrap();
+                    s.storage_pending = false;
+                    s.error.clear();
+                }
+                Err(e) => shared.lock().unwrap().error = format!("Storage retry: {e}"),
+            }
+            save_retry = Instant::now() + Duration::from_secs(5);
+        }
+        let event = match receiver.recv_timeout(Duration::from_secs(1)) {
+            Ok(event) => event,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(e) => return Err(e.into()),
+        };
+        let (reading, rssi, received) = match event {
             Advertisement::Scale(reading, rssi, received) => (reading, rssi, received),
             Advertisement::Clock(adv) => {
                 clock.receive(&adv, &mut shared.lock().unwrap().clock);
@@ -197,17 +236,9 @@ fn run(
             replay_guard = false;
         }
         if let Some(history) = history {
-            let bytes = serde_json::to_vec(&history)?;
-            match nvs.set_blob("history", &bytes) {
-                Ok(_) => {
-                    shared.lock().unwrap().error.clear();
-                    log::info!("Scale saved stable reading, history={}", history.len());
-                }
-                Err(e) => {
-                    shared.lock().unwrap().error = format!("Save failed: {e}");
-                    log::error!("Scale NVS save failed: {e}");
-                }
-            }
+            pending_save = Some(history);
+            shared.lock().unwrap().storage_pending = true;
+            save_retry = Instant::now();
         }
     }
 }

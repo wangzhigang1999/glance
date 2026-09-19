@@ -1,0 +1,153 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-line dark:border-line-dark text-sm hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer whitespace-nowrap;
+  }
+  .sel {
+    @apply px-2.5 py-1.5 rounded-md border border-line dark:border-line-dark bg-transparent text-sm cursor-pointer;
+  }
+  .inp {
+    @apply px-2.5 py-1.5 rounded-md border border-line dark:border-line-dark bg-transparent text-sm flex-1 min-w-[120px] sm:max-w-[200px] focus:outline-none focus:ring-2 focus:ring-accent/40;
+  }
+}
+
+.fa-solid,
+.fa-brands {
+  font-style: normal;
+  display: inline-block;
+  min-width: 1em;
+  text-align: center;
+}
+.fa-solid::before,
+.fa-brands::before {
+  content: "•";
+}
+.fa-pause::before {
+  content: "Ⅱ";
+}
+.fa-play::before {
+  content: "▶";
+}
+.fa-rotate-right::before {
+  content: "↻";
+}
+.fa-rotate::before {
+  content: "↻";
+}
+.fa-arrows-rotate::before {
+  content: "↻";
+}
+.fa-expand::before {
+  content: "⛶";
+}
+.fa-forward-step::before {
+  content: "›";
+}
+.fa-gear::before {
+  content: "⚙";
+}
+.fa-sliders::before {
+  content: "☷";
+}
+.fa-terminal::before {
+  content: "›_";
+}
+.fa-microchip::before {
+  content: "▣";
+}
+.fa-house::before {
+  content: "⌂";
+}
+.fa-wifi::before {
+  content: "◉";
+}
+.fa-floppy-disk::before {
+  content: "✓";
+}
+.fa-check::before {
+  content: "✓";
+}
+.fa-trash::before {
+  content: "×";
+}
+.fa-power-off::before {
+  content: "⏻";
+}
+.fa-eye::before {
+  content: "◉";
+}
+.fa-key::before {
+  content: "⚿";
+}
+.fa-circle-info::before {
+  content: "ⓘ";
+}
+.fa-clock::before {
+  content: "◷";
+}
+.fa-clock-rotate-left::before {
+  content: "◷";
+}
+.fa-temperature-half::before {
+  content: "♨";
+}
+.fa-droplet::before {
+  content: "◊";
+}
+.fa-github::before {
+  content: "GH";
+}
+.fa-arrow-left::before {
+  content: "←";
+}
+.fa-chevron-left::before {
+  content: "‹";
+}
+.fa-chevron-right::before {
+  content: "›";
+}
+.fa-display::before {
+  content: "▣";
+}
+.fa-desktop::before {
+  content: "▣";
+}
+.fa-download::before {
+  content: "↓";
+}
+.fa-sun::before {
+  content: "☼";
+}
+.fa-bolt::before {
+  content: "ϟ";
+}
+.fa-battery-full::before {
+  content: "▰";
+}
+.fa-circle::before {
+  content: "●";
+}
+.fa-xmark::before {
+  content: "×";
+}
+.fa-stop::before {
+  content: "■";
+}
+.fa-copy::before {
+  content: "▣";
+}
+.fa-magnifying-glass::before {
+  content: "⌕";
+}
+.fa-link::before {
+  content: "↗";
+}
+.fa-arrow-up-right-from-square::before {
+  content: "↗";
+}
+.fa-code::before {
+  content: "‹›";
+}

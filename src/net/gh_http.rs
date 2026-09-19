@@ -76,7 +76,13 @@ pub fn gh_request(url: &str, token: Option<&str>, body: Option<&[u8]>) -> Result
     loop {
         match conn.read(&mut chunk) {
             Ok(0) => break,
-            Ok(n) => out.extend_from_slice(&chunk[..n]),
+            Ok(n) => {
+                anyhow::ensure!(
+                    out.len() + n <= 128 * 1024,
+                    "GitHub response exceeds 128 KiB"
+                );
+                out.extend_from_slice(&chunk[..n]);
+            }
             Err(e) => return Err(anyhow!("read body: {e:?}")),
         }
     }

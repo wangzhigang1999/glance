@@ -44,7 +44,7 @@ impl Provisioner {
 
         let form_html = render_form(ap_ssid, mac);
         // form 和 done 页都 'static 化给各 handler 闭包
-        let form_html: &'static str = Box::leak(form_html.into_boxed_str());
+        let form_html: std::sync::Arc<str> = form_html.into();
 
         // `/` + captive-portal 探测 URL 全部返回表单
         for path in [
@@ -53,6 +53,7 @@ impl Provisioner {
             "/library/test/success.html",
             "/generate_204",
         ] {
+            let form_html = form_html.clone();
             server.fn_handler(path, Method::Get, move |req| -> Result<(), anyhow::Error> {
                 let mut resp = req.into_ok_response()?;
                 resp.write_all(form_html.as_bytes())?;

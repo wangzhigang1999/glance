@@ -78,10 +78,14 @@ impl Rtc {
             bin_to_bcd(dt.month),
             bin_to_bcd(yr),
         ];
-        drv.write(ADDR, &buf, 100)
-            .context("PCF85063 burst write time")?;
-        drv.write(ADDR, &[REG_CONTROL_1, 0x00], 100)
-            .context("PCF85063 RUN")?;
+        let written = drv
+            .write(ADDR, &buf, 100)
+            .context("PCF85063 burst write time");
+        let resumed = drv
+            .write(ADDR, &[REG_CONTROL_1, 0x00], 100)
+            .context("PCF85063 RUN");
+        written?;
+        resumed?;
         Ok(())
     }
 
@@ -91,7 +95,19 @@ impl Rtc {
         let Some(dt) = self.read()? else {
             return Ok(false);
         };
+        anyhow::ensure!(
+            (1..=12).contains(&dt.month)
+                && (1..=31).contains(&dt.day)
+                && dt.hour < 24
+                && dt.minute < 60
+                && dt.second < 60,
+            "Invalid RTC date/time"
+        );
         let unix = unix_from_utc(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
+        anyhow::ensure!(
+            utc_from_unix(unix) == (dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second),
+            "Invalid RTC calendar date"
+        );
         // 健壮性:RTC 偶尔会返回 oxff/全 0,过滤明显跳的
         if dt.year < 2025 || dt.year > 2099 {
             log::warn!(

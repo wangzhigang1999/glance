@@ -15,7 +15,7 @@ pub struct Activity {
     pub last_detail: Option<String>,
     /// 事件 UTC epoch 秒(0 = 未知)
     pub last_at_epoch: u64,
-    pub open_prs: u32,
+    pub open_prs: Option<u32>,
 }
 
 pub fn fetch(user: &str, token: &str) -> Result<Activity> {
@@ -49,7 +49,7 @@ pub fn fetch(user: &str, token: &str) -> Result<Activity> {
                 total_count: u32,
             }
             if let Ok(s) = serde_json::from_slice::<Search>(&body) {
-                act.open_prs = s.total_count;
+                act.open_prs = Some(s.total_count);
             }
         }
         Err(_) => log::warn!("activity: PR search failed (ignored)"),

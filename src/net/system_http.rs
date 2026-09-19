@@ -25,6 +25,7 @@ pub type SharedSystem = Arc<RwLock<SystemSnapshot>>;
 pub struct SystemSnapshot {
     // ---- identity ----
     pub fw: String,
+    pub revision: String,
     pub idf: String,
     pub mac: String,
     pub uptime_s: u64,
@@ -57,7 +58,9 @@ pub struct SystemSnapshot {
     /// 仅 USB 拔下时电池数据有意义;USB 在的话 mv/pct 都是 None
     pub battery_mv: Option<u32>,
     pub battery_pct: Option<u8>,
-    pub usb_plugged: bool,
+    pub usb_plugged: Option<bool>,
+    pub sampled_at: Option<i64>,
+    pub sampled_uptime_ms: u64,
 
     // ---- wifi ----
     pub wifi_connected: bool,

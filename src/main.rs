@@ -17,6 +17,7 @@ mod config;
 mod display;
 mod hw;
 mod net;
+mod reliability;
 mod scale;
 mod ui;
 
@@ -234,30 +235,9 @@ fn main() -> anyhow::Result<()> {
     // _sntp 必须保持在作用域内,否则 drop 会 sntp_stop() 终结对时
     let _sntp = Sntp::start()?;
 
-    // ---- SNTP 成功一次后把网络时间写回 RTC,下次开机能直接用 ----
-    // 单次 oneshot:轮询 unix_secs() 拿到值就写,2 分钟拿不到就放弃。
-    {
-        let bus_for_rtc = i2c_bus.clone();
-        std::thread::Builder::new()
-            .name("rtc_sync".into())
-            .stack_size(3072)
-            .spawn(move || {
-                let rtc = Rtc::new(bus_for_rtc);
-                for _ in 0..120 {
-                    sleep(Duration::from_secs(1));
-                    if crate::net::time::unix_secs().is_some() {
-                        system_http::set_clock_source(system_http::CLK_SNTP);
-                        if let Err(e) = rtc.sync_from_system() {
-                            log::warn!("RTC writeback failed: {e:#}");
-                        }
-                        return;
-                    }
-                }
-                log::warn!("RTC writeback: SNTP did not sync in 120s, giving up");
-            })
-            .map(|_| ())
-            .unwrap_or_else(|e| log::warn!("spawn rtc_sync thread failed: {e:#}"));
-    }
+    let rtc = Rtc::new(i2c_bus.clone());
+    let mut rtc_pending = false;
+    let mut rtc_retry = Instant::now();
 
     // ---- GitHub 共享状态(contrib / notif / activity) ----
     let contrib_shared: Arc<Mutex<Option<ContribData>>> = Arc::new(Mutex::new(None));
@@ -281,7 +261,7 @@ fn main() -> anyhow::Result<()> {
         log_hub.clone(),
         system_shared.clone(),
         scale_shared.clone(),
-        telemetry_shared,
+        telemetry_shared.clone(),
     ) {
         Ok(s) => Some(s),
         Err(e) => {
@@ -291,7 +271,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     // ---- 单线程 GH worker(三家串行轮询,省 ~24KB SRAM vs 三线程各 12KB 栈) ----
-    gh_worker::spawn(
+    let gh_health = gh_worker::spawn(
         config.clone(),
         contrib_shared.clone(),
         contrib_err_shared.clone(),
@@ -305,15 +285,40 @@ fn main() -> anyhow::Result<()> {
 
     // ---- 主循环 ----
     // 100ms tick:按钮响应;重活(传感器+重绘)按 config.sensor_refresh_s 节奏跑。
-    let boot = Instant::now();
     let mut n: u32 = 0;
     let mut page = Page::default();
     let mut last_scale_refresh = Instant::now() - Duration::from_secs(1);
     let mut last_refresh = Instant::now() - Duration::from_secs(60);
     let mut last_rotate = Instant::now();
     let tick = Duration::from_millis(100);
+    let mut wifi_retry = Instant::now() + Duration::from_secs(5);
+    let mut wifi_backoff = 1u64;
+    let mut sample_unix = None;
+    let mut sample_uptime_ms = 0u64;
+    let mut scale_revision = None;
 
     loop {
+        if wifi.is_connected() {
+            wifi_backoff = 1;
+            wifi_retry = Instant::now() + Duration::from_secs(5);
+        } else if Instant::now() >= wifi_retry {
+            if let Err(e) = wifi.reconnect() {
+                log::warn!("Wi-Fi reconnect: {e:#}");
+            }
+            wifi_retry = Instant::now() + Duration::from_secs(wifi_backoff.max(5));
+            wifi_backoff = (wifi_backoff * 2).min(60);
+        }
+        if net::sntp::take_sync() {
+            system_http::set_clock_source(system_http::CLK_SNTP);
+            rtc_pending = true;
+        }
+        if rtc_pending && Instant::now() >= rtc_retry {
+            match rtc.sync_from_system() {
+                Ok(()) => rtc_pending = false,
+                Err(e) => log::warn!("RTC writeback retry pending: {e:#}"),
+            }
+            rtc_retry = Instant::now() + Duration::from_secs(60);
+        }
         // 每 tick 一次性读出本轮要用的所有配置字段
         let (refresh_period, auto_rotate, auto_rotate_period, tz_off, t_off, h_off) = {
             let c = config.read().unwrap();
@@ -357,13 +362,28 @@ fn main() -> anyhow::Result<()> {
         };
 
         let due = last_refresh.elapsed() >= refresh_period;
-        let scale_due =
-            page == Page::Weight && last_scale_refresh.elapsed() >= Duration::from_millis(500);
+        let revision = scale_shared.lock().unwrap().last_seen;
+        let scale_due = page == Page::Weight
+            && last_scale_refresh.elapsed() >= Duration::from_millis(500)
+            && (revision != scale_revision
+                || last_scale_refresh.elapsed() >= Duration::from_secs(5));
         if page_changed || due || scale_due {
             state.scale = scale_shared.lock().unwrap().clone();
+            state.tz_offset = tz_off;
+            let cloud = telemetry_shared.lock().unwrap().clone();
+            state.cloud_connected = cloud.connected;
+            state.cloud_queued = cloud.queued_weight;
+            state.cloud_error = !cloud.error.is_empty()
+                || !cloud.storage_error.is_empty()
+                || cloud.weight_queue_full;
+            state.cloud_acked = cloud.last_ack_unix.is_some();
+            state.gh_health = gh_health.lock().unwrap().clone();
             last_scale_refresh = Instant::now();
+            scale_revision = revision;
             if due {
                 n = n.saturating_add(1);
+                sample_unix = net::time::unix_secs();
+                sample_uptime_ms = unsafe { esp_idf_svc::sys::esp_timer_get_time() as u64 / 1000 };
                 match sensor.read() {
                     Ok((t_raw, rh_raw)) => {
                         let t = t_raw + t_off;
@@ -384,7 +404,8 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
-            state.uptime_secs = boot.elapsed().as_secs();
+            state.uptime_secs =
+                unsafe { esp_idf_svc::sys::esp_timer_get_time() as u64 / 1_000_000 };
             state.sample_count = n;
             state.wifi_connected = wifi.is_connected();
             state.ip_octets = wifi.ip_info().map(|i| i.ip.octets());
@@ -396,14 +417,17 @@ fn main() -> anyhow::Result<()> {
             });
             state.clock_date = format_local_date(tz_off);
 
+            let mut power_valid = true;
             state.battery = match battery.read() {
                 Ok(PowerSource::Battery { mv, percent }) => Some((mv, percent)),
                 Ok(PowerSource::Usb) => None,
                 Err(e) => {
+                    power_valid = false;
                     log::warn!("battery read failed: {e}");
                     None
                 }
             };
+            state.power_known = power_valid;
             let sys = read_sys_stats();
             state.heap_free = sys.heap_free as u32;
             state.heap_total = sys.heap_total as u32;
@@ -414,6 +438,11 @@ fn main() -> anyhow::Result<()> {
             state.reset_reason = sys.reset_reason;
             state.chip_temp_c = chip_temp.as_ref().and_then(|c| c.read_celsius());
 
+            state.contrib_valid = false;
+            state.notif_valid = false;
+            state.activity_valid = false;
+            state.open_prs = None;
+            state.notif_count = 0;
             // GitHub 贡献:从共享 Arc 复制到 state
             if let Ok(g) = contrib_shared.lock() {
                 if let Some(data) = g.as_ref() {
@@ -487,6 +516,7 @@ fn main() -> anyhow::Result<()> {
             // ---- 硬件总览 snapshot:供 /api/system 读 ----
             let snap = system_http::SystemSnapshot {
                 fw: state.fw_version.to_string(),
+                revision: env!("FIRMWARE_REVISION").into(),
                 idf: state.idf_version.to_string(),
                 mac: state.mac_suffix.as_str().to_string(),
                 uptime_s: state.uptime_secs,
@@ -511,7 +541,9 @@ fn main() -> anyhow::Result<()> {
                 battery_mv: state.battery.map(|(mv, _)| mv),
                 battery_pct: state.battery.map(|(_, p)| p),
                 // Battery::read 把 USB 和读错误都映射成 None,这里只能近似判定
-                usb_plugged: state.battery.is_none(),
+                usb_plugged: power_valid.then_some(state.battery.is_none()),
+                sampled_at: sample_unix,
+                sampled_uptime_ms: sample_uptime_ms,
                 wifi_connected: state.wifi_connected,
                 wifi_ssid: state.wifi_ssid.as_str().to_string(),
                 wifi_ip: state.ip_octets,
