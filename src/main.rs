@@ -1,4 +1,4 @@
-//! 温湿度计主程序
+//! ESP32-S3 信息终端(System / GitHub / Weight)
 //!
 //! 启动流程:
 //! 1. Display 初始化 + 启屏自检 + SHTC3 初始化
@@ -6,7 +6,7 @@
 //!    - 有凭据:直接连 WiFi(3 次失败回退到 SoftAP 配网)
 //!    - 没凭据:开 SoftAP + HTTP 门户,阻塞等手机提交
 //! 3. 配网成功:停 AP,STA 连家里 WiFi,启动 SNTP
-//! 4. 主循环:5 s 读一次传感器,刷 UI
+//! 4. 主循环:采集硬件状态,刷新 System/GitHub/Weight UI
 //!
 //! 配网(首次/清 NVS 后):
 //! - 手机连 "CuriosityLab-Setup"(open,无密码)
@@ -17,6 +17,7 @@ mod config;
 mod display;
 mod hw;
 mod net;
+mod scale;
 mod ui;
 
 use std::{
@@ -203,7 +204,10 @@ fn main() -> anyhow::Result<()> {
     log::info!("loaded {} stored wifi cred(s)", stored_creds.len());
 
     // ---- WiFi manager ----
-    let mut wifi = WifiManager::new(peripherals.modem, sys_loop, nvs)?;
+    let (wifi_modem, bt_modem) = peripherals.modem.split();
+    // BLE reception and NVS history work even while Wi-Fi is being provisioned.
+    let scale_shared = scale::spawn(bt_modem, nvs.clone());
+    let mut wifi = WifiManager::new(wifi_modem, sys_loop, nvs.clone())?;
 
     // ---- 连接策略:优先用 NVS 凭据,失败则回退 BLE 配网 ----
     let creds = obtain_creds(
@@ -265,6 +269,8 @@ fn main() -> anyhow::Result<()> {
     // ---- 屏幕镜像 HTTP 服务 + 运行时配置 API + 硬件总览 ----
     let screen_shared = screen_http::new_shared_fb();
     let system_shared = system_http::new_shared();
+    let telemetry_shared =
+        net::telemetry::spawn(nvs.clone(), system_shared.clone(), scale_shared.clone());
     let http_next_flag = Arc::new(AtomicBool::new(false));
     let _screen_server = match screen_http::start(
         screen_shared.clone(),
@@ -274,6 +280,8 @@ fn main() -> anyhow::Result<()> {
         creds_store.clone(),
         log_hub.clone(),
         system_shared.clone(),
+        scale_shared.clone(),
+        telemetry_shared,
     ) {
         Ok(s) => Some(s),
         Err(e) => {
@@ -291,7 +299,7 @@ fn main() -> anyhow::Result<()> {
         activity_shared.clone(),
         activity_err_shared.clone(),
     );
-    log::info!("GH worker: contribution + notifications + activity (merged)");
+    log::info!("Data worker: GitHub contribution/notifications/activity");
     // 这里不阻塞,主循环里每次直接看 SystemTime 是否 > 2020 来判"是否已同步"
     // 理由:sntp_get_sync_status 在 poll 周期内会从 COMPLETED 翻回 IN_PROGRESS,不稳定
 
@@ -299,7 +307,8 @@ fn main() -> anyhow::Result<()> {
     // 100ms tick:按钮响应;重活(传感器+重绘)按 config.sensor_refresh_s 节奏跑。
     let boot = Instant::now();
     let mut n: u32 = 0;
-    let mut page = Page::Dashboard;
+    let mut page = Page::default();
+    let mut last_scale_refresh = Instant::now() - Duration::from_secs(1);
     let mut last_refresh = Instant::now() - Duration::from_secs(60);
     let mut last_rotate = Instant::now();
     let tick = Duration::from_millis(100);
@@ -325,7 +334,8 @@ fn main() -> anyhow::Result<()> {
         let key_edge = btn_key.poll_pressed();
         let http_next = http_next_flag.swap(false, Ordering::Relaxed);
         let auto_due = auto_rotate && last_rotate.elapsed() >= auto_rotate_period;
-        let page_changed = if boot_edge || key_edge || http_next || auto_due {
+        let main_page_switch = key_edge || http_next || auto_due;
+        let page_changed = if main_page_switch {
             page = page.next();
             last_rotate = Instant::now();
             log::info!(
@@ -337,12 +347,21 @@ fn main() -> anyhow::Result<()> {
                 page
             );
             true
+        } else if boot_edge {
+            page = page.next();
+            last_rotate = Instant::now();
+            log::info!("Page switch (BOOT) -> {:?}", page);
+            true
         } else {
             false
         };
 
         let due = last_refresh.elapsed() >= refresh_period;
-        if page_changed || due {
+        let scale_due =
+            page == Page::Weight && last_scale_refresh.elapsed() >= Duration::from_millis(500);
+        if page_changed || due || scale_due {
+            state.scale = scale_shared.lock().unwrap().clone();
+            last_scale_refresh = Instant::now();
             if due {
                 n = n.saturating_add(1);
                 match sensor.read() {
@@ -476,6 +495,7 @@ fn main() -> anyhow::Result<()> {
                 heap_free: state.heap_free,
                 heap_total: state.heap_total,
                 heap_min: state.heap_min_ever,
+                heap_largest: sys.heap_largest as u32,
                 psram_free: state.psram_free,
                 psram_total: state.psram_total,
                 stack_hwm: state.stack_hwm_bytes,
@@ -503,7 +523,9 @@ fn main() -> anyhow::Result<()> {
                 *guard = snap;
             }
 
-            last_refresh = Instant::now();
+            if due {
+                last_refresh = Instant::now();
+            }
         }
 
         sleep(tick);

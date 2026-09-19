@@ -18,6 +18,10 @@ pub struct RuntimeConfig {
     // --- GitHub fetcher 周期 (秒);contrib/notif/activity 共用同一 worker 串行轮询 ---
     pub gh_refresh_s: u32,
     pub gh_err_s: u32,
+    // --- Market feed (quant 项目局域网/ECS 只读 JSON) ---
+    pub market_url: String,
+    pub market_token: String,
+    pub market_refresh_s: u32,
     // --- 主循环 ---
     pub sensor_refresh_s: u32,
     pub auto_rotate: bool,
@@ -38,6 +42,9 @@ impl Default for RuntimeConfig {
             gh_token: String::new(),
             gh_refresh_s: 300,
             gh_err_s: 120,
+            market_url: String::new(),
+            market_token: String::new(),
+            market_refresh_s: 60,
             sensor_refresh_s: 5,
             auto_rotate: false,
             auto_rotate_s: 15,
@@ -59,6 +66,9 @@ const K_USER: &str = "gh_user";
 const K_TOKEN: &str = "gh_token";
 const K_GH_OK: &str = "gh_ok";
 const K_GH_ERR: &str = "gh_err";
+const K_MKT_URL: &str = "mkt_url";
+const K_MKT_TOKEN: &str = "mkt_tok";
+const K_MKT_SEC: &str = "mkt_sec";
 const K_SREFR: &str = "srefr";
 const K_ROT_ON: &str = "rot_on";
 const K_ROT_SEC: &str = "rot_sec";
@@ -93,6 +103,17 @@ impl ConfigStore {
         if let Ok(Some(v)) = self.nvs.get_u32(K_GH_ERR) {
             base.gh_err_s = v;
         }
+        let mut buf = [0u8; 192];
+        if let Ok(Some(s)) = self.nvs.get_str(K_MKT_URL, &mut buf) {
+            base.market_url = s.into();
+        }
+        let mut buf = [0u8; 128];
+        if let Ok(Some(s)) = self.nvs.get_str(K_MKT_TOKEN, &mut buf) {
+            base.market_token = s.into();
+        }
+        if let Ok(Some(v)) = self.nvs.get_u32(K_MKT_SEC) {
+            base.market_refresh_s = v;
+        }
         if let Ok(Some(v)) = self.nvs.get_u32(K_SREFR) {
             base.sensor_refresh_s = v;
         }
@@ -122,6 +143,9 @@ impl ConfigStore {
         let _ = self.nvs.set_str(K_TOKEN, &c.gh_token)?;
         let _ = self.nvs.set_u32(K_GH_OK, c.gh_refresh_s)?;
         let _ = self.nvs.set_u32(K_GH_ERR, c.gh_err_s)?;
+        let _ = self.nvs.set_str(K_MKT_URL, &c.market_url)?;
+        let _ = self.nvs.set_str(K_MKT_TOKEN, &c.market_token)?;
+        let _ = self.nvs.set_u32(K_MKT_SEC, c.market_refresh_s)?;
         let _ = self.nvs.set_u32(K_SREFR, c.sensor_refresh_s)?;
         let _ = self.nvs.set_u8(K_ROT_ON, c.auto_rotate as u8)?;
         let _ = self.nvs.set_u32(K_ROT_SEC, c.auto_rotate_s)?;
@@ -149,6 +173,7 @@ pub fn clamp(c: &mut RuntimeConfig) {
     }
     clip(&mut c.gh_refresh_s, 30, 24 * 3600);
     clip(&mut c.gh_err_s, 30, 24 * 3600);
+    clip(&mut c.market_refresh_s, 15, 24 * 3600);
     clip(&mut c.sensor_refresh_s, 1, 3600);
     clip(&mut c.auto_rotate_s, 3, 3600);
     clip(&mut c.splash_flash, 0, 64);
@@ -177,5 +202,11 @@ pub fn clamp(c: &mut RuntimeConfig) {
     }
     if c.gh_token.len() > 255 {
         c.gh_token.truncate(255);
+    }
+    if c.market_url.len() > 191 {
+        c.market_url.truncate(191);
+    }
+    if c.market_token.len() > 127 {
+        c.market_token.truncate(127);
     }
 }

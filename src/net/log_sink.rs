@@ -17,12 +17,15 @@ use log::{Log, Metadata, Record};
 const HISTORY_CAP: usize = 400;
 /// 单条日志超出就裁剪(防 args!() 喷一坨)
 const LINE_MAX: usize = 512;
+// Inline strings keep the entire ring and HTTP snapshots in one large PSRAM
+// allocation instead of hundreds of small long-lived SRAM allocations.
+pub type LogLine = heapless::String<LINE_MAX>;
 
 struct State {
     /// 下次新行用的 seq;同时也等于"当前已分配过的最大 seq + 1"
     next_seq: u64,
     /// (seq, line) FIFO,容量 HISTORY_CAP
-    history: VecDeque<(u64, String)>,
+    history: VecDeque<(u64, LogLine)>,
 }
 
 /// 给 HTTP 端用的句柄。
@@ -34,7 +37,7 @@ impl LogHub {
     /// 拉取 seq 严格大于 `since` 的所有行,返回 `(next_seq, lines)`。
     /// 客户端把返回的 `next_seq` 当下次 `since` 用即可。
     /// 若 `since` 比 ringbuffer 头还旧,漏掉的中间条无法恢复(前端可对比相邻 next_seq 跳幅判断丢了多少)。
-    pub fn since(&self, since: u64) -> (u64, Vec<String>) {
+    pub fn since(&self, since: u64) -> (u64, Vec<LogLine>) {
         let s = self.state.lock().unwrap();
         let lines = s
             .history
@@ -73,6 +76,8 @@ impl Log for Sink {
             record.args()
         );
         truncate_utf8(&mut line, LINE_MAX);
+        let mut stored = LogLine::new();
+        let _ = stored.push_str(&line);
 
         // 3) 推 history。锁内只 push,不做 IO。
         let Ok(mut s) = self.state.lock() else {
@@ -80,10 +85,10 @@ impl Log for Sink {
         };
         let seq = s.next_seq;
         s.next_seq = s.next_seq.wrapping_add(1);
-        s.history.push_back((seq, line));
-        while s.history.len() > HISTORY_CAP {
+        if s.history.len() == HISTORY_CAP {
             s.history.pop_front();
         }
+        s.history.push_back((seq, stored));
     }
 
     fn flush(&self) {

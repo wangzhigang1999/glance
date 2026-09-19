@@ -4,8 +4,8 @@
 
 use esp_idf_svc::sys::{
     esp_efuse_mac_get_default, esp_ota_get_running_partition, esp_partition_read, esp_reset_reason,
-    heap_caps_get_free_size, heap_caps_get_minimum_free_size, heap_caps_get_total_size,
-    uxTaskGetStackHighWaterMark, MALLOC_CAP_INTERNAL, MALLOC_CAP_SPIRAM,
+    heap_caps_get_free_size, heap_caps_get_largest_free_block, heap_caps_get_minimum_free_size,
+    heap_caps_get_total_size, uxTaskGetStackHighWaterMark, MALLOC_CAP_INTERNAL, MALLOC_CAP_SPIRAM,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -16,6 +16,7 @@ pub struct SysStats {
     pub heap_total: usize,
     /// 启动以来内部 SRAM 最低值(暴露泄漏/突刺)
     pub heap_min_ever: usize,
+    pub heap_largest: usize,
     /// PSRAM 空闲
     pub psram_free: usize,
     pub psram_total: usize,
@@ -103,14 +104,15 @@ pub fn read_sys_stats() -> SysStats {
         let psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
         let psram_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
         // null task handle = current task = main task(我们是在 app_main 里)
-        let hwm_words = uxTaskGetStackHighWaterMark(core::ptr::null_mut());
-        let main_stack_hwm_bytes = hwm_words * 4; // FreeRTOS 栈以 word(4B)计
+        // ESP-IDF returns bytes, unlike upstream FreeRTOS (words).
+        let main_stack_hwm_bytes = uxTaskGetStackHighWaterMark(core::ptr::null_mut());
         let reset_reason = reset_reason_name(esp_reset_reason());
 
         SysStats {
             heap_free,
             heap_total,
             heap_min_ever,
+            heap_largest: heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
             psram_free,
             psram_total,
             main_stack_hwm_bytes,

@@ -1,4 +1,4 @@
-//! 温湿度计 UI - 信息密集仪表盘
+//! 三页 UI:System / GitHub / Weight
 //!
 //! 布局(400×300,四段 + 顶栏):
 //!
@@ -29,7 +29,7 @@ use embedded_graphics::{
     },
     pixelcolor::BinaryColor,
     prelude::*,
-    primitives::{Circle, Line, PrimitiveStyle, Rectangle},
+    primitives::{Line, PrimitiveStyle, Rectangle},
     text::{Alignment, Baseline, Text},
 };
 use profont::{PROFONT_14_POINT, PROFONT_18_POINT, PROFONT_24_POINT};
@@ -43,6 +43,7 @@ use crate::display::{Display, HEIGHT, WIDTH};
 
 #[derive(Debug, Clone)]
 pub struct AppState {
+    pub scale: crate::scale::Snapshot,
     // 传感器
     pub temperature_c: Option<f32>,
     pub humidity_pct: Option<f32>,
@@ -103,6 +104,8 @@ pub struct AppState {
     pub activity_valid: bool,
     pub activity_error: heapless::String<80>,
 
+    // Quant 项目生成的只读行情摘要
+
     // GitHub 用户名(运行时可改,主循环从 SharedConfig 拷过来)
     pub gh_user: heapless::String<40>,
     // GitHub token 是否已配置(主循环从 SharedConfig 同步);未配置则 github 页整页给配置提示
@@ -117,6 +120,7 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
+            scale: crate::scale::Snapshot::default(),
             temperature_c: None,
             humidity_pct: None,
             chip_temp_c: None,
@@ -173,13 +177,12 @@ impl Default for AppState {
 // y 坐标分隔线
 const Y_SEP_TOP: i32 = 30;
 const Y_SEP_CLOCK: i32 = 108;
-// TH 段含值 + 下方 mini sparkline(T/RH 10 分钟趋势),高 102px 留足曲线空间
-const Y_SEP_TH: i32 = 210;
 // wifi 瘦到 24px
 const Y_SEP_STATS: i32 = 276;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
+    Weight,
     Dashboard,
     Github,
 }
@@ -187,12 +190,13 @@ pub enum Page {
 impl Page {
     pub fn next(self) -> Self {
         match self {
+            Self::Weight => Self::Dashboard,
             Self::Dashboard => Self::Github,
-            Self::Github => Self::Dashboard,
+            Self::Github => Self::Weight,
         }
     }
 
-    pub const ALL: &'static [Page] = &[Page::Dashboard, Page::Github];
+    pub const ALL: &'static [Page] = &[Page::Dashboard, Page::Github, Page::Weight];
 
     pub fn index(self) -> usize {
         Self::ALL.iter().position(|p| *p == self).unwrap_or(0)
@@ -228,6 +232,7 @@ pub fn render(
     }
 
     match page {
+        Page::Weight => render_weight(target, state, &tiny, &micro)?,
         Page::Dashboard => render_dashboard(target, state, &tiny, &micro, &th_val, &th_label)?,
         Page::Github => render_github(target, state, &tiny, &micro, &header, &th_val)?,
     }
@@ -238,15 +243,80 @@ pub fn render(
     Ok(())
 }
 
+fn render_weight(
+    target: &mut Display<'_>,
+    state: &AppState,
+    tiny: &MonoTextStyle<'_, BinaryColor>,
+    micro: &MonoTextStyle<'_, BinaryColor>,
+) -> Result<(), core::convert::Infallible> {
+    let s = &state.scale;
+    Text::new("WEIGHT", Point::new(14, 23), *tiny).draw(target)?;
+    let scan_status = if !s.error.is_empty() {
+        "CHECK ERROR"
+    } else if s.scanning {
+        "LISTENING"
+    } else {
+        "STARTING"
+    };
+    Text::with_alignment(scan_status, Point::new(386, 23), *micro, Alignment::Right)
+        .draw(target)?;
+    Line::new(Point::new(2, 32), Point::new(397, 32))
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+        .draw(target)?;
+    let fresh = s.last_seen.is_some_and(|t| t.elapsed().as_secs() < 15);
+    let live = if fresh { s.live_kg } else { None };
+    let value = live.or_else(|| s.history.last().map(|r| r.kg));
+    let number = value
+        .map(|kg| format!("{kg:.2}"))
+        .unwrap_or_else(|| "--.--".into());
+    let font = FontRenderer::new::<u8g2_font_logisoso58_tn>();
+    let _ = font.render_aligned(
+        number.as_str(),
+        Point::new(200, 115),
+        VerticalPosition::Baseline,
+        HorizontalAlignment::Center,
+        FontColor::Transparent(BinaryColor::On),
+        target,
+    );
+    Text::with_alignment("kg", Point::new(200, 139), *tiny, Alignment::Center).draw(target)?;
+    let label = match (live, value, s.stable) {
+        (Some(_), _, true) => "STABLE",
+        (Some(_), _, false) => "MEASURING...",
+        (None, Some(_), _) => "LAST STABLE READING",
+        _ => "STEP ON YOUR SCALE",
+    };
+    Text::with_alignment(label, Point::new(200, 166), *tiny, Alignment::Center).draw(target)?;
+    Line::new(Point::new(14, 181), Point::new(386, 181))
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+        .draw(target)?;
+    Text::new("RECENT STABLE READINGS", Point::new(14, 198), *micro).draw(target)?;
+    for (i, reading) in s.history.iter().rev().take(3).enumerate() {
+        let text = format!("{}   {:.2} kg", i + 1, reading.kg);
+        Text::new(&text, Point::new(14, 218 + i as i32 * 17), *micro).draw(target)?;
+    }
+    let detail = if !s.error.is_empty() {
+        "Storage / BLE error: see /api/weight".to_string()
+    } else if let Some(last) = s.last_seen {
+        format!(
+            "Last signal {}s ago | {} dBm",
+            last.elapsed().as_secs(),
+            s.rssi.unwrap_or(0)
+        )
+    } else {
+        "Waiting for nearby Xiaomi scale".to_string()
+    };
+    Text::new(&detail, Point::new(14, 269), *micro).draw(target)?;
+    render_bottom_bar(target, state, micro)
+}
+
 fn render_dashboard(
     target: &mut Display<'_>,
     state: &AppState,
     tiny: &MonoTextStyle<'_, BinaryColor>,
     micro: &MonoTextStyle<'_, BinaryColor>,
-    th_val: &MonoTextStyle<'_, BinaryColor>,
-    th_label: &MonoTextStyle<'_, BinaryColor>,
+    _th_val: &MonoTextStyle<'_, BinaryColor>,
+    _th_label: &MonoTextStyle<'_, BinaryColor>,
 ) -> Result<(), core::convert::Infallible> {
-    // Y_SEP_TH 不画:sparkline 下方紧挨一条直线容易被读成曲线 axis,内容跳跃(曲线→文字)本身足够区分
     for y in [Y_SEP_TOP, Y_SEP_CLOCK, Y_SEP_STATS] {
         Line::new(Point::new(6, y), Point::new(WIDTH as i32 - 6, y))
             .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
@@ -254,7 +324,6 @@ fn render_dashboard(
     }
     render_top_bar(target, state, tiny)?;
     render_clock(target, state)?;
-    render_th(target, state, th_val, th_label)?;
     render_stats(target, state, tiny)?;
     render_bottom_bar(target, state, micro)?;
     Ok(())
@@ -374,128 +443,6 @@ fn render_clock(
 }
 
 // ============================================================================
-// 温湿度 y=108..154
-// 值占中线,无标签(C/%/° 已明示单位)。PROFONT_24 字宽 ~14 px,在数字右侧画
-// 5x5 空心圆当 ° 符号,后接 "C"。
-// ============================================================================
-fn render_th(
-    target: &mut Display<'_>,
-    state: &AppState,
-    val: &MonoTextStyle<'_, BinaryColor>,
-    _label: &MonoTextStyle<'_, BinaryColor>,
-) -> Result<(), core::convert::Infallible> {
-    let center_l = WIDTH as i32 / 4;
-    let center_r = WIDTH as i32 * 3 / 4;
-    // 值固定在 TH 段上部;下面 ~60px 给 sparkline
-    let y_mid = 128;
-    let style = embedded_graphics::text::TextStyleBuilder::new()
-        .alignment(Alignment::Center)
-        .baseline(Baseline::Middle)
-        .build();
-
-    // ---- T:"28.5 °C" 形式,° 靠 Circle 画 ----
-    let mut t_txt: heapless::String<8> = heapless::String::new();
-    match state.temperature_c {
-        Some(t) => {
-            let _ = write!(t_txt, "{:.1} C", t);
-        }
-        None => {
-            let _ = t_txt.push_str("--.- C");
-        }
-    }
-    // 整体居中渲染"28.5 C",然后在空格位置叠画 °
-    Text::with_text_style(&t_txt, Point::new(center_l, y_mid), *val, style).draw(target)?;
-    // "28.5 C" 共 6 字符,空格是第 5 个(索引 4);文字整体中心=center_l,
-    // 空格中心相对文字中心偏移:(4 - (6-1)/2.0) * 14 = 21 px
-    let space_cx = center_l + 21;
-    Circle::new(Point::new(space_cx - 3, y_mid - 11), 6)
-        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
-        .draw(target)?;
-
-    // ---- RH:"57.3 %" ----
-    let mut h_txt: heapless::String<8> = heapless::String::new();
-    match state.humidity_pct {
-        Some(h) => {
-            let _ = write!(h_txt, "{:.1} %", h);
-        }
-        None => {
-            let _ = h_txt.push_str("--.- %");
-        }
-    }
-    Text::with_text_style(&h_txt, Point::new(center_r, y_mid), *val, style).draw(target)?;
-
-    // ---- mini sparkline:T 和 RH 各画 10 分钟趋势线,高度 28 ----
-    let spark_y = 146;
-    let spark_h = 58u32;
-    let spark_w = (WIDTH as i32 / 2 - 20) as u32;
-    let t_x = 10;
-    let rh_x = WIDTH as i32 / 2 + 10;
-    // 最小动态范围:温度 0.1°C / 湿度 0.5%;亚度级变化也能看到
-    draw_mini_spark(
-        target,
-        &state.temp_hist,
-        Point::new(t_x, spark_y),
-        Size::new(spark_w, spark_h),
-        0.1,
-    )?;
-    draw_mini_spark(
-        target,
-        &state.rh_hist,
-        Point::new(rh_x, spark_y),
-        Size::new(spark_w, spark_h),
-        0.5,
-    )?;
-
-    // 中间竖分
-    Line::new(
-        Point::new(WIDTH as i32 / 2, Y_SEP_CLOCK + 4),
-        Point::new(WIDTH as i32 / 2, Y_SEP_TH - 4),
-    )
-    .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-    .draw(target)?;
-    Ok(())
-}
-
-/// 从 HistoryBuffer 拉 values,以"中值 ± max(实际半幅, min_span/2)"为 y 范围
-/// 画 sparkline。min_span 大于实际波动时曲线会显扁(真"平稳")。
-fn draw_mini_spark(
-    target: &mut Display<'_>,
-    hist: &heapless::HistoryBuffer<f32, 120>,
-    origin: Point,
-    size: Size,
-    min_span: f32,
-) -> Result<(), core::convert::Infallible> {
-    let mut vals: heapless::Vec<f32, 120> = heapless::Vec::new();
-    for v in hist.oldest_ordered() {
-        let _ = vals.push(*v);
-    }
-    if vals.len() < 2 {
-        let y = origin.y + size.height as i32 - 1;
-        Line::new(
-            Point::new(origin.x, y),
-            Point::new(origin.x + size.width as i32 - 1, y),
-        )
-        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-        .draw(target)?;
-        return Ok(());
-    }
-    let mut lo = f32::MAX;
-    let mut hi = f32::MIN;
-    for v in vals.iter() {
-        if *v < lo {
-            lo = *v;
-        }
-        if *v > hi {
-            hi = *v;
-        }
-    }
-    let mid = (hi + lo) / 2.0;
-    // 保底半幅 = min_span/2;实际半幅更大才撑开
-    let half = ((hi - lo) / 2.0).max(min_span / 2.0);
-    draw_sparkline(target, origin, size, &vals, mid - half, mid + half)
-}
-
-// ============================================================================
 // 系统指标 y=154..232(78px):两行带进度条(APP/HEAP)+ 一行 UP/RST/IDF
 // 用 micro(FONT_6X10,高 10px)够清晰又腾得开空间,bar 彻底不会和文字咬。
 // 预算:
@@ -514,64 +461,27 @@ fn render_stats(
 ) -> Result<(), core::convert::Infallible> {
     let micro = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
     let left_x = 10;
-    // stats 段 210..276(66px),紧凑但清楚
-    let line1_y = 216;
-    let bar1_y = 228;
-    let line2_y = 238;
-    let bar2_y = 250;
-    let line3_y = 260;
-
     let bar_w = WIDTH as i32 - 2 * left_x;
-    let bar_h = 6i32;
+    let bar_h = 9i32;
 
-    // Line 1: APP 镜像 / 分区容量
-    let app_pct = if state.app_part_size > 0 && state.app_used > 0 {
-        (((state.app_used as u64) * 100) / (state.app_part_size as u64)).min(100) as u32
-    } else {
-        0
-    };
-    let mut l1: heapless::String<56> = heapless::String::new();
-    if state.app_part_size > 0 && state.app_used > 0 {
-        let _ = write!(
-            l1,
-            "APP  {} / {} MB  {}%",
-            fmt_mb(state.app_used),
-            fmt_mb(state.app_part_size),
-            app_pct,
-        );
-    } else {
-        let _ = write!(l1, "FLASH  chip 16.0 MB");
-    }
-    Text::with_baseline(&l1, Point::new(left_x, line1_y), micro, Baseline::Top).draw(target)?;
-    if state.app_part_size > 0 && state.app_used > 0 {
-        draw_progress_bar(target, left_x, bar1_y, bar_w, bar_h, app_pct)?;
-    }
-
-    // Line 2: SRAM(内部,紧) + PSRAM(外部 8MB,闲)并列同一行
-    //   左列 = 内部 SRAM:DMA/WiFi/BLE 必用,吃紧就是吃它
-    //   右列 = 外部 PSRAM:大堆,基本空着
-    let col_gap = 10i32;
-    let col_w = (bar_w - col_gap) / 2;
-    let sram_x = left_x;
-    let psram_x = left_x + col_w + col_gap;
-
+    // 温湿度退出物理主页后,把 108..276 全部让给内存/固件健康度。
     let sram_used = state.heap_total.saturating_sub(state.heap_free);
     let sram_pct = if state.heap_total > 0 {
         ((sram_used as u64 * 100) / state.heap_total as u64).min(100) as u32
     } else {
         0
     };
-    let mut l_sram: heapless::String<24> = heapless::String::new();
-    // SRAM 加一个空格凑齐与 "PSRAM " 同宽(5+1),让两列数值按相同列起点
+    let mut l_sram: heapless::String<56> = heapless::String::new();
     let _ = write!(
         l_sram,
-        "SRAM  {}/{}K {}%",
+        "SRAM  {}/{}K  {}%   FREE {}K",
         sram_used / 1024,
         state.heap_total / 1024,
         sram_pct,
+        state.heap_free / 1024,
     );
-    Text::with_baseline(&l_sram, Point::new(sram_x, line2_y), micro, Baseline::Top).draw(target)?;
-    draw_progress_bar(target, sram_x, bar2_y, col_w, bar_h, sram_pct)?;
+    Text::with_baseline(&l_sram, Point::new(left_x, 119), micro, Baseline::Top).draw(target)?;
+    draw_progress_bar(target, left_x, 132, bar_w, bar_h, sram_pct)?;
 
     let psram_used = state.psram_total.saturating_sub(state.psram_free);
     let psram_pct = if state.psram_total > 0 {
@@ -579,7 +489,7 @@ fn render_stats(
     } else {
         0
     };
-    let mut l_psram: heapless::String<24> = heapless::String::new();
+    let mut l_psram: heapless::String<56> = heapless::String::new();
     if state.psram_total == 0 {
         let _ = write!(l_psram, "PSRAM n/a");
     } else {
@@ -588,29 +498,69 @@ fn render_stats(
         let total_d = ((state.psram_total as u64) * 10 + 524_288) / 1_048_576;
         let _ = write!(
             l_psram,
-            "PSRAM {}.{}/{}.{}M {}%",
+            "PSRAM {}.{}/{}.{}M  {}%   FREE {}K",
             used_d / 10,
             used_d % 10,
             total_d / 10,
             total_d % 10,
             psram_pct,
+            state.psram_free / 1024,
         );
     }
-    Text::with_baseline(&l_psram, Point::new(psram_x, line2_y), micro, Baseline::Top)
-        .draw(target)?;
-    draw_progress_bar(target, psram_x, bar2_y, col_w, bar_h, psram_pct)?;
+    Text::with_baseline(&l_psram, Point::new(left_x, 151), micro, Baseline::Top).draw(target)?;
+    draw_progress_bar(target, left_x, 164, bar_w, bar_h, psram_pct)?;
 
-    // Line 3: UP + RST + IDF
+    let app_pct = if state.app_part_size > 0 && state.app_used > 0 {
+        (((state.app_used as u64) * 100) / (state.app_part_size as u64)).min(100) as u32
+    } else {
+        0
+    };
+    let mut l_app: heapless::String<56> = heapless::String::new();
+    if state.app_part_size > 0 && state.app_used > 0 {
+        let _ = write!(
+            l_app,
+            "APP    {} / {} MB  {}%   FLASH 16M",
+            fmt_mb(state.app_used),
+            fmt_mb(state.app_part_size),
+            app_pct,
+        );
+    } else {
+        let _ = l_app.push_str("APP    n/a                 FLASH 16M");
+    }
+    Text::with_baseline(&l_app, Point::new(left_x, 183), micro, Baseline::Top).draw(target)?;
+    draw_progress_bar(target, left_x, 196, bar_w, bar_h, app_pct)?;
+
+    let mut health: heapless::String<64> = heapless::String::new();
+    let _ = write!(
+        health,
+        "MIN FREE {}K   STACK {}K",
+        state.heap_min_ever / 1024,
+        state.stack_hwm_bytes / 1024,
+    );
+    if let Some(temp) = state.chip_temp_c {
+        let _ = write!(health, "   CHIP {:.1}C", temp);
+    }
+    Text::with_baseline(&health, Point::new(left_x, 216), micro, Baseline::Top).draw(target)?;
+
     let up_h = state.uptime_secs / 3600;
     let up_m = (state.uptime_secs / 60) % 60;
     let up_s = state.uptime_secs % 60;
-    let mut l3: heapless::String<56> = heapless::String::new();
+    let mut l3: heapless::String<64> = heapless::String::new();
     let _ = write!(
         l3,
-        "UP {:02}:{:02}:{:02}  RST {}  IDF {}",
+        "UP {:02}:{:02}:{:02}   RST {}   IDF {}",
         up_h, up_m, up_s, state.reset_reason, state.idf_version
     );
-    Text::with_baseline(&l3, Point::new(left_x, line3_y), micro, Baseline::Top).draw(target)?;
+    Text::with_baseline(&l3, Point::new(left_x, 236), micro, Baseline::Top).draw(target)?;
+
+    let mut network: heapless::String<64> = heapless::String::new();
+    let _ = write!(
+        network,
+        "HEAP TOTAL {}K   PSRAM TOTAL {}K",
+        state.heap_total / 1024,
+        state.psram_total / 1024
+    );
+    Text::with_baseline(&network, Point::new(left_x, 256), micro, Baseline::Top).draw(target)?;
     Ok(())
 }
 
@@ -721,50 +671,6 @@ fn draw_wifi_bars(
                 .draw(target)?;
         }
     }
-    Ok(())
-}
-
-/// 把 `values` 等间距映射到 bounding box 内,画 polyline。
-fn draw_sparkline(
-    target: &mut Display<'_>,
-    origin: Point,
-    size: Size,
-    values: &[f32],
-    vmin: f32,
-    vmax: f32,
-) -> Result<(), core::convert::Infallible> {
-    let n = values.len() as i32;
-    if n < 2 {
-        return Ok(());
-    }
-    let w = size.width as i32;
-    let h = size.height as i32;
-    // vmin==vmax 时避免除零
-    let range = (vmax - vmin).max(0.1);
-
-    let to_point = |i: i32, v: f32| -> Point {
-        let x = origin.x + (i * (w - 1)) / (n - 1);
-        let ratio = ((v - vmin) / range).clamp(0.0, 1.0);
-        // y 在 bound 内从 2 到 h-4 (留几像素给轴)
-        let y_span = h - 6;
-        let y = origin.y + 2 + ((1.0 - ratio) * y_span as f32) as i32;
-        Point::new(x, y)
-    };
-
-    for i in 1..n {
-        let p0 = to_point(i - 1, values[(i - 1) as usize]);
-        let p1 = to_point(i, values[i as usize]);
-        Line::new(p0, p1)
-            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-            .draw(target)?;
-    }
-
-    // 最后一个点画个小实心圆圈突出
-    let last = to_point(n - 1, values[(n - 1) as usize]);
-    Rectangle::new(Point::new(last.x - 1, last.y - 1), Size::new(3, 3))
-        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-        .draw(target)?;
-
     Ok(())
 }
 

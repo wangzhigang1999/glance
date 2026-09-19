@@ -35,6 +35,7 @@ pub struct SystemSnapshot {
     pub heap_free: u32,
     pub heap_total: u32,
     pub heap_min: u32,
+    pub heap_largest: u32,
     pub psram_free: u32,
     pub psram_total: u32,
     pub stack_hwm: u32,

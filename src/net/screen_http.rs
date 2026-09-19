@@ -79,6 +79,8 @@ pub fn start(
     creds: Arc<CredsStore>,
     log_hub: Arc<LogHub>,
     system_shared: SharedSystem,
+    scale_shared: crate::scale::SharedScale,
+    telemetry_shared: crate::net::telemetry::SharedTelemetry,
 ) -> Result<EspHttpServer<'static>> {
     let srv_cfg = Configuration {
         stack_size: 10 * 1024,
@@ -513,6 +515,8 @@ pub fn start(
 
     // ---- 硬件总览页(/system.html + /api/system) ----
     crate::net::system_http::register(&mut server, system_shared)?;
+    crate::scale::register(&mut server, scale_shared)?;
+    crate::net::telemetry::register(&mut server, telemetry_shared)?;
 
     log::info!(
         "Screen HTTP server up on http://<ip>/  (/, /settings, /logs.html, /logs.json, /screen.bmp, /next, /api/config, /api/wifi{{,/remove}}, /api/wifi_forget, /api/reboot, /system.html, /api/system)"
@@ -536,7 +540,7 @@ fn parse_since(uri: &str) -> u64 {
 
 /// 手写 JSON,省一次 `Vec<&String>` 中转 + serde 模板代码。
 /// 输出形如 `{"next":42,"lines":["...","..."]}`,字符串走 serde_json 转义。
-fn encode_logs_json(next: u64, lines: &[String]) -> String {
+fn encode_logs_json(next: u64, lines: &[crate::net::log_sink::LogLine]) -> String {
     let mut out = String::with_capacity(64 + lines.iter().map(|l| l.len() + 4).sum::<usize>());
     out.push_str("{\"next\":");
     out.push_str(&next.to_string());
@@ -546,7 +550,7 @@ fn encode_logs_json(next: u64, lines: &[String]) -> String {
             out.push(',');
         }
         // serde_json::to_string 给个合法 JSON 字符串字面量(带引号 + 转义)
-        match serde_json::to_string(l) {
+        match serde_json::to_string(l.as_str()) {
             Ok(s) => out.push_str(&s),
             Err(_) => out.push_str("\"\""),
         }
@@ -605,6 +609,10 @@ struct ConfigView<'a> {
     gh_token_set: bool,
     gh_refresh_s: u32,
     gh_err_s: u32,
+    market_url: &'a str,
+    market_token: String,
+    market_token_set: bool,
+    market_refresh_s: u32,
     sensor_refresh_s: u32,
     auto_rotate: bool,
     auto_rotate_s: u32,
@@ -622,12 +630,23 @@ fn emit_config_json(c: &crate::config::RuntimeConfig, mask_token: bool) -> Strin
     } else {
         c.gh_token.clone()
     };
+    let market_token_display = if mask_token && !c.market_token.is_empty() {
+        let tail: String = c.market_token.chars().rev().take(4).collect();
+        let tail: String = tail.chars().rev().collect();
+        format!("***{tail}")
+    } else {
+        c.market_token.clone()
+    };
     let view = ConfigView {
         gh_user: &c.gh_user,
         gh_token: token_display,
         gh_token_set: !c.gh_token.is_empty(),
         gh_refresh_s: c.gh_refresh_s,
         gh_err_s: c.gh_err_s,
+        market_url: &c.market_url,
+        market_token: market_token_display,
+        market_token_set: !c.market_token.is_empty(),
+        market_refresh_s: c.market_refresh_s,
         sensor_refresh_s: c.sensor_refresh_s,
         auto_rotate: c.auto_rotate,
         auto_rotate_s: c.auto_rotate_s,
@@ -646,6 +665,9 @@ struct ConfigPatch {
     gh_token: Option<String>,
     gh_refresh_s: Option<u32>,
     gh_err_s: Option<u32>,
+    market_url: Option<String>,
+    market_token: Option<String>,
+    market_refresh_s: Option<u32>,
     sensor_refresh_s: Option<u32>,
     auto_rotate: Option<bool>,
     auto_rotate_s: Option<u32>,
@@ -672,6 +694,19 @@ fn apply_json_patch(c: &mut crate::config::RuntimeConfig, body: &str) {
     }
     if let Some(v) = p.gh_err_s {
         c.gh_err_s = v;
+    }
+    if let Some(v) = p.market_url {
+        c.market_url = v;
+    }
+    if let Some(v) = p.market_token {
+        if v.is_empty() {
+            c.market_token.clear();
+        } else if !v.starts_with("***") {
+            c.market_token = v;
+        }
+    }
+    if let Some(v) = p.market_refresh_s {
+        c.market_refresh_s = v;
     }
     if let Some(v) = p.sensor_refresh_s {
         c.sensor_refresh_s = v;

@@ -11,7 +11,7 @@
 use anyhow::{anyhow, Context, Result};
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
-    hal::modem::Modem,
+    hal::modem::WifiModem,
     ipv4::IpInfo,
     nvs::EspDefaultNvsPartition,
     sys,
@@ -39,7 +39,7 @@ pub struct WifiManager {
 
 impl WifiManager {
     pub fn new(
-        modem: Modem<'static>,
+        modem: WifiModem<'static>,
         sys_loop: EspSystemEventLoop,
         nvs: EspDefaultNvsPartition,
     ) -> Result<Self> {
