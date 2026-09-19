@@ -247,7 +247,7 @@ status 使用 retained online 和离线遗嘱；telemetry 不 retain。重连退
 `/api/telemetry` 可查看连接、积压和 broker 确认数，不返回密码。
 
 体重待发送消息和已发送标识保存在 NVS，重启继续用相同消息编号重试；未出队的历史以秤的最近 16 条为限。
-温湿度 RAM 队列最多 60 条（约一小时），重启会丢失尚未发送的环境数据，满队列时丢弃最近的积压项为新数据腾空间。
+温湿度 RAM 等待队列最多 60 条，另保留一批等待 broker 确认的消息，重启会丢失尚未发送的环境数据，满队列时丢弃最近的积压项为新数据腾空间。
 PUBACK 仅代表 broker 确认，不代表 SQLite 入库；服务端尚未提供应用层 ACK。
 
 ## SRAM / PSRAM 分配
@@ -264,5 +264,7 @@ MiBeacon v4/v5 AES-CCM 解密和认证使用 ESP-IDF 自带 mbedTLS；启动时�
 绑定密钥从忽略目录 data/bindkeys.json 读取，或由 RLCD_CLOCK_KEYS 指定；构建后嵌入固件，勿分享二进制或备份。
 /api/weight 的 scale.clock 提供 configured、authenticated、rejected 与分字段接收时间，不返回密钥。
 新温度/湿度/电量通过 mijia_temperature_c、mijia_humidity_pct、mijia_battery_pct 字段上报，沿用 rlcd-01 凭据与 TLS。
-按认证 nonce 去重（最多 256 个、一小时），旧值不周期性重发冒充新测量；最多缓存 60 条环境待发消息，断电丢失尚未发送环境读数。
+按认证 nonce 去重（最多 256 个、一小时），旧值不周期性重发冒充新测量；每 60 秒将新环境读数打包成一次 MQTT 数组上报（最多 60 条、16 KiB），各条保留原始 seq 和采集时间；最多缓存 60 条环境待发消息，断电丢失尚未发送环境读数。
 板载 SHTC3 继续保留为诊断来源；ECS 看板优先米家、不混合历史，超过 15 分钟无更新标记过期。
+
+环境批次等待 PUBACK 时保留原文，重连重试不重新编号。体重使用独立优先队列，不等待环境批次定时器。`/api/telemetry` 可查看 `climate_batch_interval_s`、`queued_climate` 和 `pending_climate_batch`。

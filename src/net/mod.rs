@@ -16,6 +16,7 @@ pub mod screen_http;
 pub mod sntp;
 pub mod system_http;
 pub mod telemetry;
+mod telemetry_batch;
 pub mod time;
 pub mod wifi;
 

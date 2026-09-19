@@ -33,6 +33,8 @@ pub struct Status {
     configured: bool,
     connected: bool,
     queued_climate: usize,
+    pending_climate_batch: bool,
+    climate_batch_interval_s: u64,
     pending_weight: bool,
     broker_acks: u64,
     climate_dropped: u64,
@@ -134,6 +136,8 @@ fn run(
     let mut seq = 0;
     let mut climate: VecDeque<String> = VecDeque::new();
     let mut next_sample = Instant::now();
+    let mut next_batch = Instant::now() + Duration::from_secs(60);
+    let mut climate_batch: Option<String> = None;
     let mut clock_sent = [None; 3];
     let mut client: Option<EspMqttClient<'static>> = None;
     let (tx, rx) = mpsc::channel();
@@ -160,13 +164,16 @@ fn run(
             if let Some(reading) = reading {
                 if clock_sent[index] != Some(reading.received)
                     && reading.received.elapsed().as_secs() <= 900
-                    && climate.len() < 60
                 {
                     let ts = reading.unix_secs.or_else(|| {
                         sys.unix_secs
                             .map(|now| now - reading.received.elapsed().as_secs() as i64)
                     });
                     if ts.is_some() {
+                        if climate.len() == 60 {
+                            climate.pop_back();
+                            status.lock().unwrap().climate_dropped += 1;
+                        }
                         climate.push_back(sample(
                             &boot_id,
                             &mut seq,
@@ -220,7 +227,7 @@ fn run(
         }
         if now >= next_sample && sys.sample_count > 0 {
             if climate.len() == 60 {
-                // Preserve the front record if it is in flight; shed newest backlog instead.
+                // In-flight batch is separate; bound the next minute of samples.
                 climate.pop_back();
                 status.lock().unwrap().climate_dropped += 1;
             }
@@ -271,7 +278,7 @@ fn run(
                                     persist(&nvs, &durable)?;
                                 }
                             } else {
-                                climate.pop_front();
+                                climate_batch = None;
                             }
                             inflight = None;
                             status.lock().unwrap().broker_acks += 1;
@@ -307,7 +314,7 @@ fn run(
                     task_stack: 6144,
                     buffer_size: 1024,
                     out_buffer_size: 1024,
-                    outbox_limit: Some(8192),
+                    outbox_limit: Some(32 * 1024),
                     crt_bundle_attach: Some(esp_idf_svc::sys::esp_crt_bundle_attach),
                     skip_cert_common_name_check: false,
                     lwt: Some(LwtConfiguration {
@@ -353,12 +360,16 @@ fn run(
             while rx.try_recv().is_ok() {}
             retry_at = now + Duration::from_secs(1);
         }
+        if climate_batch.is_none() && now >= next_batch {
+            climate_batch =
+                super::telemetry_batch::take_batch(&mut climate).map_err(anyhow::Error::msg)?;
+        }
         if connected && inflight.is_none() {
             let pending = durable
                 .pending
                 .as_ref()
                 .map(|p| (true, p.payload.as_str()))
-                .or_else(|| climate.front().map(|p| (false, p.as_str())));
+                .or_else(|| climate_batch.as_ref().map(|p| (false, p.as_str())));
             if let (Some((weight, payload)), Some(c)) = (pending, client.as_mut()) {
                 match c.enqueue(
                     &format!("{ROOT}/telemetry"),
@@ -366,7 +377,12 @@ fn run(
                     false,
                     payload.as_bytes(),
                 ) {
-                    Ok(id) => inflight = Some((id, weight, Instant::now())),
+                    Ok(id) => {
+                        inflight = Some((id, weight, Instant::now()));
+                        if !weight {
+                            next_batch = Instant::now() + Duration::from_secs(60);
+                        }
+                    }
                     Err(e) => status.lock().unwrap().error = format!("Enqueue: {e}"),
                 }
             }
@@ -375,6 +391,8 @@ fn run(
             let mut s = status.lock().unwrap();
             s.connected = connected;
             s.queued_climate = climate.len();
+            s.pending_climate_batch = climate_batch.is_some();
+            s.climate_batch_interval_s = 60;
             s.pending_weight = durable.pending.is_some();
         }
 
