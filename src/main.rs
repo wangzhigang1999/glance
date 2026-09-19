@@ -417,17 +417,15 @@ fn main() -> anyhow::Result<()> {
             });
             state.clock_date = format_local_date(tz_off);
 
-            let mut power_valid = true;
-            state.battery = match battery.read() {
-                Ok(PowerSource::Battery { mv, percent }) => Some((mv, percent)),
-                Ok(PowerSource::Usb) => None,
+            let usb_plugged = match battery.read() {
+                Ok(PowerSource::Battery) => Some(false),
+                Ok(PowerSource::Usb) => Some(true),
                 Err(e) => {
-                    power_valid = false;
                     log::warn!("battery read failed: {e}");
                     None
                 }
             };
-            state.power_known = power_valid;
+            state.battery = battery.voltage_mv();
             let sys = read_sys_stats();
             state.heap_free = sys.heap_free as u32;
             state.heap_total = sys.heap_total as u32;
@@ -538,10 +536,11 @@ fn main() -> anyhow::Result<()> {
                 chip_temp_c: state.chip_temp_c,
                 temp_off_c: t_off,
                 humid_off_pct: h_off,
-                battery_mv: state.battery.map(|(mv, _)| mv),
-                battery_pct: state.battery.map(|(_, p)| p),
-                // Battery::read 把 USB 和读错误都映射成 None,这里只能近似判定
-                usb_plugged: power_valid.then_some(state.battery.is_none()),
+                battery_mv: battery.voltage_mv(),
+                battery_adc_mv: battery.adc_mv(),
+                battery_pct: None,
+                // 仅表示 USB 主机检测;充电器状态未知,异常电压不再误报 USB。
+                usb_plugged,
                 sampled_at: sample_unix,
                 sampled_uptime_ms: sample_uptime_ms,
                 wifi_connected: state.wifi_connected,

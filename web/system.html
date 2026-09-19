@@ -122,9 +122,8 @@
           <div class="kv">
             <span>Source</span><span id="pwr-source">—</span>
           </div>
-          <div class="kv"><span>Battery</span><span id="pwr-bat">—</span></div>
-          <div class="bar" id="pwr-bar-wrap">
-            <div id="pwr-bar" style="width: 0%"></div>
+          <div class="kv">
+            <span>Battery voltage</span><span id="pwr-bat">—</span>
           </div>
         </div>
 
@@ -255,19 +254,14 @@
 
         // Power
         if (s.usb_plugged) {
-          $("pwr-source").textContent = "USB";
-          $("pwr-bat").textContent = "—";
-          setBar("pwr-bar", "pwr-bar-wrap", 0, 0);
+          $("pwr-source").textContent = "USB host · 充电状态未知";
         } else if (s.battery_mv != null) {
-          $("pwr-source").textContent = "Battery";
-          $("pwr-bat").textContent =
-            `${s.battery_mv} mV (${s.battery_pct ?? 0}%)`;
-          setBar("pwr-bar", "pwr-bar-wrap", s.battery_pct ?? 0, 100);
+          $("pwr-source").textContent = "未检测到 USB 主机";
         } else {
           $("pwr-source").textContent = "—";
-          $("pwr-bat").textContent = "—";
-          setBar("pwr-bar", "pwr-bar-wrap", 0, 0);
         }
+        $("pwr-bat").textContent =
+          s.battery_mv != null ? `${(s.battery_mv / 1000).toFixed(2)} V` : "—";
 
         // WiFi
         $("wifi-status").textContent = s.wifi_connected

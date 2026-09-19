@@ -55,8 +55,11 @@ pub struct SystemSnapshot {
     pub humid_off_pct: f32,
 
     // ---- power ----
-    /// 仅 USB 拔下时电池数据有意义;USB 在的话 mv/pct 都是 None
+    /// 电池端电压(USB 下也采样);不能据此确认电池存在/充满。
     pub battery_mv: Option<u32>,
+    /// 分压端 ADC 校准后的 mV,用于对照万用表检查分压/采样偏差。
+    pub battery_adc_mv: Option<u32>,
+    /// 兼容旧客户端保留字段,已停用容量估算,始终为 None。
     pub battery_pct: Option<u8>,
     pub usb_plugged: Option<bool>,
     pub sampled_at: Option<i64>,

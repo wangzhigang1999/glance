@@ -80,8 +80,7 @@ pub struct AppState {
     pub clock_hm: Option<heapless::String<8>>,
     pub clock_date: Option<heapless::String<16>>,
     // 电源
-    pub battery: Option<(u32, u8)>,
-    pub power_known: bool,
+    pub battery: Option<u32>,
     // 配网
     pub prov_mode: bool,
     pub prov_hint: heapless::String<32>,
@@ -160,7 +159,6 @@ impl Default for AppState {
             clock_hm: None,
             clock_date: None,
             battery: None,
-            power_known: false,
             prov_mode: false,
             prov_hint: heapless::String::new(),
             prov_ap_ip: None,
@@ -324,23 +322,18 @@ fn render_top_bar(
         .unwrap_or("---- -- -- ---");
     Text::with_baseline(date, Point::new(10, 7), *tiny, Baseline::Top).draw(target)?;
 
-    // 右:电池 / USB(版本挪去 /settings 页,日常无意义)
+    // 右:电池端电压,不推算容量或绘制电量进度。
     let mut right: heapless::String<24> = heapless::String::new();
     match state.battery {
-        Some((mv, pct)) => {
-            let _ = write!(right, "{}% {}.{:02}V", pct, mv / 1000, (mv % 1000) / 10);
+        Some(mv) => {
+            let _ = write!(right, "{}.{:02}V", mv / 1000, (mv % 1000) / 10);
         }
         None => {
-            let _ = right.push_str(if state.power_known { "USB" } else { "PWR ?" });
+            let _ = right.push_str("--.--V");
         }
     }
     let right_px = right.len() as i32 * 9;
 
-    // 电池图标(如有)
-    if let Some((_, pct)) = state.battery {
-        let icon_x = WIDTH as i32 - 10 - right_px - 32;
-        draw_battery_icon(target, Point::new(icon_x, 8), pct)?;
-    }
     Text::with_baseline(
         &right,
         Point::new(WIDTH as i32 - 10 - right_px, 7),
@@ -348,26 +341,6 @@ fn render_top_bar(
         Baseline::Top,
     )
     .draw(target)?;
-    Ok(())
-}
-
-fn draw_battery_icon(
-    target: &mut Display<'_>,
-    origin: Point,
-    pct: u8,
-) -> Result<(), core::convert::Infallible> {
-    Rectangle::new(origin, Size::new(26, 13))
-        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-        .draw(target)?;
-    Rectangle::new(Point::new(origin.x + 26, origin.y + 3), Size::new(2, 6))
-        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-        .draw(target)?;
-    let fill_w = ((pct as u32) * 22 / 100).min(22);
-    if fill_w > 0 {
-        Rectangle::new(Point::new(origin.x + 2, origin.y + 2), Size::new(fill_w, 9))
-            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-            .draw(target)?;
-    }
     Ok(())
 }
 

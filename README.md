@@ -250,6 +250,15 @@ status 使用 retained online 和离线遗嘱；telemetry 不 retain。重连退
 温湿度 RAM 等待队列最多 60 条，另保留一批等待 broker 确认的消息，重启会丢失尚未发送的环境数据，满队列时丢弃最旧的等待项为新数据腾空间。
 PUBACK 仅代表 broker 确认，不代表 SQLite 入库；服务端尚未提供应用层 ACK。
 
+## 电池电量的限制与诊断
+
+GPIO4 经 200K/100K 分压测量电池端电压，每 5 秒采 16 次、去掉两端各 4 次后平均。
+USB 主机连接时也保留 `/api/system` 的 `battery_mv` 和分压端 `battery_adc_mv`，但 `battery_pct` 为 null。
+USB SOF 只能检测活跃主机，无法识别普通充电器或确认充电完成；端电压有读数也不等于装有电池。
+异常电压不再误判成 USB 供电。屏幕和网页只显示电压，不显示百分比或电量进度图标。
+用户选择日常插电、电池用于临时过渡；已移除容量估算，不继续进行放电校准。
+API/MQTT 的 `battery_pct` 为兼容旧客户端保留为 null；米家时钟自身的电量字段不受影响。
+
 ## SRAM / PSRAM 分配
 
 TLS 加密连接的动态内存明确放到 PSRAM；普通 malloc 超过 1KB 优先 PSRAM。
