@@ -1,0 +1,45 @@
+name: Build flashable firmware
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: firmware-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  firmware:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      RLCD_PUBLIC_BUILD: '1'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: esp-rs/xtensa-toolchain@v1.7.0
+        with:
+          buildtargets: esp32s3
+          version: '1.93.0.0'
+          ldproxy: true
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev libssl-dev pkg-config ninja-build cmake
+      - name: Build public firmware (no credentials)
+        run: python scripts/build.py --public
+      - name: Install image packager
+        run: |
+          curl --fail --location --retry 3 https://github.com/esp-rs/espflash/releases/download/v4.4.0/espflash-x86_64-unknown-linux-gnu.zip -o /tmp/espflash.zip
+          unzip /tmp/espflash.zip -d /tmp/espflash
+          chmod +x /tmp/espflash/espflash
+          echo /tmp/espflash >> "$GITHUB_PATH"
+      - name: Package ELF and flashable images
+        run: python scripts/package.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: glance-esp32s3-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30

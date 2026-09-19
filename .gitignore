@@ -1,5 +1,8 @@
 /.vscode
 /.embuild
 /target
-/Cargo.lock
 /data/
+/dist/
+__pycache__/
+/sdkconfig
+/sdkconfig.*

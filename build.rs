@@ -1,4 +1,6 @@
 fn main() {
+    let public_build = std::env::var("RLCD_PUBLIC_BUILD").as_deref() == Ok("1");
+    println!("cargo:rerun-if-env-changed=RLCD_PUBLIC_BUILD");
     let revision = std::process::Command::new("git")
         .args(["describe", "--always", "--dirty"])
         .output()
@@ -13,7 +15,11 @@ fn main() {
         std::env::var("RLCD_IOT_CONFIG").unwrap_or_else(|_| "data/ecs-iot/rlcd-01.json".into());
     println!("cargo:rerun-if-env-changed=RLCD_IOT_CONFIG");
     println!("cargo:rerun-if-changed={credentials}");
-    let contents = std::fs::read(&credentials).unwrap_or_else(|_| b"{}".to_vec());
+    let contents = if public_build {
+        b"{}".to_vec()
+    } else {
+        std::fs::read(&credentials).unwrap_or_else(|_| b"{}".to_vec())
+    };
     let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     std::fs::write(output.join("iot_config.json"), contents).unwrap();
     let keys = std::env::var("RLCD_CLOCK_KEYS").unwrap_or_else(|_| "data/bindkeys.json".into());
@@ -21,7 +27,11 @@ fn main() {
     println!("cargo:rerun-if-changed={keys}");
     std::fs::write(
         output.join("clock_keys.json"),
-        std::fs::read(keys).unwrap_or_else(|_| b"{}".to_vec()),
+        if public_build {
+            b"{}".to_vec()
+        } else {
+            std::fs::read(keys).unwrap_or_else(|_| b"{}".to_vec())
+        },
     )
     .unwrap();
     embuild::espidf::sysenv::output();

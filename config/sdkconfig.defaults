@@ -8,10 +8,7 @@ CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=4096
 # ===== ESP32-S3-WROOM-1-N16R8:16MB Flash =====
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
-# 自定义分区表:factory=4MB 留给 WiFi+BLE+业务;storage 预留
-# 注:embuild 会把 ESP-IDF 项目生成在 target/.../out,partitions.csv 需要绝对路径
-CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="D:/codes/esp32-s3-rlcd/firmware/partitions.csv"
+# scripts/build.py 注入 config/partitions.csv 的绝对路径,兼容 Windows/Linux。
 
 # ===== ESP32-S3-WROOM-1-N16R8:8MB Octal PSRAM =====
 CONFIG_ESP32S3_SPIRAM_SUPPORT=y

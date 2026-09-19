@@ -1,296 +1,58 @@
-# ESP32-S3-RLCD-4.2 Rust 固件
+# Glance · ESP32-S3-RLCD-4.2
 
-Waveshare ESP32-S3-RLCD-4.2(N16R8)开发板的 Rust 四页信息终端，基于
-**ESP-IDF v5.5.3** + **`esp-idf-svc` 0.52** `std` 路线。
+Waveshare ESP32-S3-RLCD-4.2（N16R8）的 Rust 信息终端，使用 ESP-IDF v5.5.3。
+三页界面：System → GitHub → Weight；支持小米体重秤 BLE 接收、温湿度采集和 MQTT 上报。
 
-## 小米体重秤 2（新增）
+## 目录
 
-启动联网后默认打开 **System** 页，体重页排在最后；KEY / BOOT 按 System → GitHub → Weight 顺序切换主页面。接收指定小米体重秤
-`70:87:9E:41:24:A0` 的 `0x181D` 广播：实时显示公斤数和 MEASURING / STABLE 状态，
-15 秒没有新广播或离秤后显示 LAST STABLE READING，不把旧值冒充实时值。
+```text
+.cargo/               跨平台 Rust/ESP-IDF 构建配置
+.github/workflows/    主机测试与可烧录固件 CI
+config/               板卡 sdkconfig 和 Flash 分区表
+docs/                 功能说明、开发指南和烧录说明
+scripts/              构建、测试、打包脚本
+src/                  Rust 固件（hw / net / scale / ui / config）
+tests/host/           无需开发板的回归测试
+web/                  设备本地管理页与样式
+Cargo.toml / Cargo.lock   依赖及锁定版本
+build.rs              Cargo 构建入口与私密配置注入
+```
 
-稳定读数按称重会话去重，最近 16 条保存在 NVS 的 `scale/history`，断电后恢复；
-没有校准时钟时仍保存体重，时间为 null。只保存稳定结果，不把每个广播写入 Flash。
-本功能只识别秤，不识别人，物品称量同样可能形成记录。
+`data/` 为本机私密配置，`target/`、`dist/` 为构建产物，均不提交。
+Cargo 自动发现的 `build.rs`、`rust-toolchain.toml`、`rustfmt.toml` 保留在根目录。
 
-BLE 在 Wi-Fi 配网前启动，断网时仍可接收和保存；当前屏幕启动流程仍先完成 Wi-Fi
-连接/配网。蓝牙使用被动扫描，与 Wi-Fi 共存，不进行配对或连接。
-`GET /api/weight` 返回接收状态、信号年龄、实时读数及历史；接口限可信局域网使用，
-与原有设备 API 一样没有登录鉴权，不应映射到公网。配置私密凭据后可通过 WSS 上传 ECS，详见下文。
+## 本地开发
 
-纯协议回归测试（无需板子）：
+Windows（脚本提供本机默认路径，可用参数覆盖）：
 
 ```powershell
-rustc +stable --test src/scale/protocol.rs -o D:/t/rlcd/scale-protocol-tests.exe
-D:/t/rlcd/scale-protocol-tests.exe
+./scripts/test-host.ps1
+./scripts/build-web.ps1   # 修改网页后重新生成本地 CSS，需要 Node/npm
+./scripts/build-local.ps1
+just flash               # 默认 COM3，可用 just --set port COM5 flash 覆盖
 ```
 
-本机旧 Python 3.11 已被移除，使用 `./build-local.ps1` 构建。脚本仅在当前进程
-指定可用的 Python 和 `D:/t/idf55`（ESP-IDF v5.5.3），也支持 `-PythonHome` /
-`-IdfHome` 参数。显式 SDK 路径避免全局 Git HTTPS→SSH 改写触发 embuild 重复克隆。
+Linux：安装 `espup` 的 esp32s3 工具链（1.93.0.0）、`ldproxy`、Python 3.11、CMake/Ninja，
+加载 espup 的环境导出文件，然后执行：
 
-物理屏页面：
-
-1. **System**：时钟、电池、SRAM、PSRAM、Flash、栈和网络状态；
-2. **GitHub**：贡献图、通知和最近活动；
-3. **Weight**：实时体重与最近稳定称重记录。
-
-SHTC3 温湿度仍会采集并显示在 `/system.html`，不再占用物理屏主页。
-
-板卡硬件细节见项目根目录 [`../docs/`](../docs/)(Waveshare Wiki 离线镜像 + 引脚速查表)。
-
----
-
-## 文件结构
-
-```
-firmware/
-├── .cargo/
-│   └── config.toml          # 交叉编译配置:xtensa target / ldproxy 链接器 / 镜像 / 路径规避
-├── .vscode/                 # VS Code 任务配置(cargo-generate 自动生成,基本不用改)
-├── src/
-│   └── main.rs              # 三页信息终端入口
-├── build.rs                 # embuild 构建脚本,触发 ESP-IDF 下载 + C 编译 + bindgen
-├── Cargo.toml               # Rust 依赖清单(log / esp-idf-svc / anyhow)
-├── justfile                 # 开发命令快捷方式(just flash / just monitor / 等)
-├── rust-toolchain.toml      # 固定使用 "esp" 工具链(espup 安装的 xtensa fork)
-├── sdkconfig.defaults       # ESP-IDF 编译期配置:PSRAM / 16MB Flash / CPU 240MHz / USB 日志
-├── .gitignore
-└── README.md                # 本文件
+```sh
+python scripts/build.py --public
 ```
 
-运行期产生(**不提交**,已在 `.gitignore`):
+统一入口会生成当前机器的分区绝对路径，并执行 `cargo build --release --locked`。
+Windows 的短构建路径和 libclang 定位由脚本处理，不再写入共享 Cargo 配置。
 
-- `.embuild/` — 克隆下来的 ESP-IDF + 工具链(~6GB)
-- `D:\t\rlcd\` — cargo 构建产物(**target-dir 重定向**,短路径规避 Windows 路径长度限制)
-- `Cargo.lock`
+## 下载 CI 固件
 
----
+在 GitHub **Actions → Build flashable firmware → 成功运行 → Artifacts** 下载
+`glance-esp32s3-<commit>`。push、PR 和手动运行均会构建，产物保留 30 天。
 
-## 关键配置文件讲解
+产物包含 `firmware.elf`、`app.bin`、`bootloader.bin`、`partitions.csv`、`factory.bin`、
+版本信息、SHA-256 校验和及烧录指南。详见 [烧录说明](docs/flashing.md)。
 
-### `.cargo/config.toml`
+**CI 是不含凭据的通用版本**：不嵌入 MQTT 密码或米家时钟绑定密钥，因此不具备你家设备的
+云上报/加密时钟接收配置。需要这些功能时，继续在本地使用被忽略的 `data/` 配置编译。
+普通 Wi-Fi/GitHub 配置和称重历史保存在 NVS；使用指南中的升级命令可保留它们。
+不要将本地个性化 ELF/BIN 上传到公开仓库或 Actions。
 
-```toml
-[build]
-target = "xtensa-esp32s3-espidf"
-target-dir = "D:/t/rlcd"           # 避免 Windows MAX_PATH 限制
-
-[target.'cfg(target_os = "espidf")']
-linker = "ldproxy"                 # 包装 xtensa-gcc,桥接 rustc ↔ ESP-IDF
-runner = "espflash flash --monitor"  # `cargo run` 自动烧录并打开监视器
-
-[unstable]
-build-std = ["std", "panic_abort"]  # 为 xtensa 目标重新编译标准库
-
-[env]
-MCU = "esp32s3"
-ESP_IDF_VERSION = "v5.5.3"
-ESP_IDF_TOOLS_INSTALL_DIR = "workspace"     # ESP-IDF 安装到项目本地,不污染全局
-IDF_GITHUB_ASSETS = "dl.espressif.cn/github_assets"  # 国内镜像,规避 GitHub 拉包慢
-CARGO_WORKSPACE_DIR = { value = "", relative = true } # 搭配 target-dir 必需
-LIBCLANG_PATH = "...\\libclang.dll"          # bindgen 生成 FFI 所需
-```
-
-### `sdkconfig.defaults`
-
-板子 N16R8 型号配套配置:
-
-- **8 MB Octal PSRAM @ 80 MHz** —— 不开 PSRAM Rust std 栈容易爆
-- **16 MB Flash DIO 模式**
-- **CPU 240 MHz**
-- **USB Serial/JTAG 作为日志输出** —— 直接 Type-C 看 log,不需要外挂 UART
-
-### `Cargo.toml`
-
-依赖刻意保持最小:
-
-```toml
-log = "0.4"
-esp-idf-svc = "0.52.1"
-anyhow = "1.0"
-```
-
-**⚠ Windows 专属痛点**:加太多 deps(比如全套 `embassy-*`)会让链接行超过 **32KB 命令行上限**,报 `os error 206`。真需要用 async time driver 请考虑 WSL2 或 no_std 路线。
-
----
-
-## 前置依赖
-
-只有第一次装,装完长期复用。
-
-| 工具                                  | 版本                              | 安装                                |
-| ------------------------------------- | --------------------------------- | ----------------------------------- |
-| Rust stable                           | 1.92+                             | https://rustup.rs                   |
-| **Xtensa Rust 工具链(`esp` channel)** | 1.93.0.0                          | `espup install --std -t esp32s3`    |
-| Python                                | **3.11**(不要用 Windows Store 版) | `winget install Python.Python.3.11` |
-| espup                                 | 0.17+                             | `cargo install espup`               |
-| espflash                              | 4.4+                              | `cargo install espflash`            |
-| ldproxy                               | 0.3+                              | `cargo install ldproxy`             |
-| cargo-generate                        | 0.23+                             | `cargo install cargo-generate`      |
-| just(任务运行器,可选但推荐)           | 1.49+                             | `winget install Casey.Just`         |
-
-## Shell 环境(一次性)
-
-用户级 PowerShell profile 已配好,文件在
-`%USERPROFILE%\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1`。
-
-新开 PowerShell 窗口自动带:
-
-- `PATH` 前置 Python 3.11、esp-clang(xtensa 工具链 libclang)
-- 函数 `prox-on` / `prox-off` —— 一键挂/摘 Clash 代理(127.0.0.1:7890)
-- 函数 `esp-flash` / `esp-monitor` —— 独立于 just 的备用入口
-
----
-
-## 日常开发
-
-### 一把流(推荐)
-
-```powershell
-cd D:\codes\esp32-s3-rlcd\firmware
-just
-```
-
-`just` 默认跑 `flash-monitor`:**编译 → 烧录 → 监视**。按 `Ctrl+C` 退出监视器。
-
-KEY / BOOT 在 System → GitHub → Weight 三个主页面间切换。
-
-### 分步命令
-
-```powershell
-just build            # 只编译,输出到 D:\t\rlcd\...\firmware
-just flash            # 编译 + 烧(不开监视器)
-just monitor          # 只开 COM3 监视器
-just flash-monitor    # 编译 + 烧 + 监视(等同 just)
-just size             # 打印 firmware bin 大小
-just doctor           # 工具链自检
-just clean            # 清构建产物
-just update-deps      # 挂代理拉新依赖
-just --list           # 看所有任务
-```
-
-### 不用 just 的等价命令
-
-```powershell
-cargo build --release
-espflash flash D:/t/rlcd/xtensa-esp32s3-espidf/release/firmware --port COM3
-espflash monitor --port COM3
-```
-
-### 监视器快捷键
-
-打开 `espflash monitor` 后:
-
-| 键         | 行为                                    |
-| ---------- | --------------------------------------- |
-| `Ctrl + R` | 软复位芯片(触发 re-boot,看完整启动 log) |
-| `Ctrl + C` | 退出监视器                              |
-
----
-
-## 常见问题
-
-### 烧录报 `Failed to open serial port COM3`
-
-监视器窗口还开着,占用了 COM3。关掉它(`Ctrl+C` 或直接关窗),再 `just flash`。
-
-### 第一次 `cargo build` 极慢
-
-正常。第一次要:
-
-1. 克隆 ESP-IDF + 所有 submodule(~1.5GB)
-2. 下载 xtensa-gcc / cmake / ninja(~500MB)
-3. bindgen 生成 5000+ 条 FFI
-4. 编译 ESP-IDF 的 C 代码(几百个 `.c`)
-
-**务必开代理** `prox-on`,全程 30-60 分钟。后续增量编译只需几秒。
-
-### `error: linking with 'ldproxy' failed: (os error 206)`
-
-Windows 命令行 32KB 上限。把 `Cargo.toml` 里的 embassy 全家桶或其他大依赖砍掉,
-或者迁移到 WSL2。
-
-### `Too long output directory ... Shorten your project path to no more than 10 characters`
-
-`target-dir` 没重定向到短路径。检查 `.cargo/config.toml` 里 `target-dir = "D:/t/rlcd"` 是否在。
-
-### `Failed to locate python`
-
-Windows Store 里那个 python.exe 是 alias 存根,不能真执行。确保 PowerShell profile
-把 `%LOCALAPPDATA%\Programs\Python\Python311` 放在 PATH 前面。
-
----
-
-## 硬件引脚速查
-
-板子引脚映射见 [`../docs/10-pinout.md`](../docs/10-pinout.md)(I2C / SPI / I2S / 按键 / ADC 全套)。
-
----
-
-## 许可
-
-板上示例代码遵循项目许可。第三方 crate(`esp-idf-svc` 等)遵循其各自许可。
-
-体重过滤：低于 1 kg 的读数不显示、不保存；1 kg 可正常记录。启动时自动清理 NVS 中低于 1 kg 的历史记录，零点/离秤广播仍用于识别下一次称重。
-
-## ECS 遥测（真实设备）
-
-设备使用 `wss://iot.bupt.site/mqtt`、MQTT 3.1.1、QoS 1，CA 证书链和域名校验开启。
-`rlcd-01` client ID 仅供板子使用；不能同时启动同 ID 的电脑测试客户端。
-每分钟上传一次温湿度及电量、RSSI、内存状态，传感器无效值使用 null；稳定且至少 1 kg 的体重立即进入上传队列。
-启动时补传板子历史中尚未上传的记录。每次启动生成随机 boot_id，seq 递增，重试保留完整原始内容。
-status 使用 retained online 和离线遗嘱；telemetry 不 retain。重连退避约 1–60 秒并加抖动。
-
-私密连接配置位于被 Git 忽略的 `data/ecs-iot/rlcd-01.json`，或由构建环境 `RLCD_IOT_CONFIG` 指定。
-构建时写入 OUT_DIR 并嵌入固件；不要分享固件二进制，它包含设备凭据。未提供配置时云上传关闭。
-`/api/telemetry` 可查看连接、积压和 broker 确认数，不返回密码。
-
-体重 outbox（1 条在途 + 最多 24 条待发）和已发送标识保存在 NVS，重启继续使用原消息编号与内容；页面历史仍为最近 16 条。队列不淘汰未确认项，满时暴露 weight_queue_full；持续离线超过容量仍可能导致未被 outbox 接收的历史淘汰，不承诺无限离线留存。
-温湿度 RAM 等待队列最多 60 条，另保留一批等待 broker 确认的消息，重启会丢失尚未发送的环境数据，满队列时丢弃最旧的等待项为新数据腾空间。
-PUBACK 仅代表 broker 确认，不代表 SQLite 入库；服务端尚未提供应用层 ACK。
-
-## 电池电量的限制与诊断
-
-GPIO4 经 200K/100K 分压测量电池端电压，每 5 秒采 16 次、去掉两端各 4 次后平均。
-USB 主机连接时也保留 `/api/system` 的 `battery_mv` 和分压端 `battery_adc_mv`，但 `battery_pct` 为 null。
-USB SOF 只能检测活跃主机，无法识别普通充电器或确认充电完成；端电压有读数也不等于装有电池。
-异常电压不再误判成 USB 供电。屏幕和网页只显示电压，不显示百分比或电量进度图标。
-用户选择日常插电、电池用于临时过渡；已移除容量估算，不继续进行放电校准。
-API/MQTT 的 `battery_pct` 为兼容旧客户端保留为 null；米家时钟自身的电量字段不受影响。
-
-## SRAM / PSRAM 分配
-
-TLS 加密连接的动态内存明确放到 PSRAM；普通 malloc 超过 1KB 优先 PSRAM。
-400 条日志使用内联定长字符串，整个环形缓冲及导出快照按大块分配到 PSRAM，避免数百个小字符串长期占用内部 SRAM。
-主任务栈从 32KB 调为 16KB（原板实测最低空余约 25KB）；SPI DMA 缓冲和任务栈继续保留在内部 SRAM。
-栈剩余量按 ESP-IDF 的字节单位显示，移除原先错误的乘 4；`/api/system` 另有 `heap_largest` 便于观察连续可分配空间。
-
-## 米家温湿度时钟
-
-复用体重秤 BLE 被动扫描，额外仅接收已确认的时钟 A4:C1:38:67:37:31。
-MiBeacon v4/v5 AES-CCM 解密和认证使用 ESP-IDF 自带 mbedTLS；启动时运行公开合成向量及篡改/截断检查，失败禁用时钟接收，不影响秤。
-绑定密钥从忽略目录 data/bindkeys.json 读取，或由 RLCD_CLOCK_KEYS 指定；构建后嵌入固件，勿分享二进制或备份。
-/api/weight 的 scale.clock 提供 configured、authenticated、rejected 与分字段接收时间，不返回密钥。
-新温度/湿度/电量通过 mijia_temperature_c、mijia_humidity_pct、mijia_battery_pct 字段上报，沿用 rlcd-01 凭据与 TLS。
-按认证 nonce 去重（最多 256 个、一小时），旧值不周期性重发冒充新测量；每 60 秒将新环境读数打包成一次 MQTT 数组上报（最多 60 条、16 KiB），各条保留原始 seq 和采集时间；最多缓存 60 条环境待发消息，断电丢失尚未发送环境读数。
-板载 SHTC3 继续保留为诊断来源；ECS 看板优先米家、不混合历史，超过 15 分钟无更新标记过期。
-
-环境批次等待 PUBACK 时保留原文，重连重试不重新编号。体重使用独立优先队列，不等待环境批次定时器。`/api/telemetry` 可查看 `climate_batch_interval_s`、`queued_climate` 和 `pending_climate_batch`。
-
-## 0.2.0：可靠性与日常体验
-
-- Wi-Fi 运行期自动重连，间隔退避至 60 秒；恢复不需要清除凭据。
-- MQTT 初始化、NVS 保存可重试；体重与环境使用独立 QoS1 在途槽，环境 ACK 不阻塞称重。体重仅在 outbox 持久化成功后发送。
-- 体重 NVS 保存失败保留待保存状态并重试；API 暴露 BLE 丢包计数、上传队列满及存储错误。
-- SHTC3 校验两段 CRC，异常读数变成 null，错误路径尽力休眠；板载采样保存独立采集时间，不以 UI 刷新时间冒充。
-- SNTP 回调确认真正网络校时后才写 RTC；写 RTC 失败可重试，日期合法性检查与 STOP 恢复已补齐。
-- 配置与 Wi-Fi 凭据使用完整 blob 原子保存，兼容旧键迁移；无效 JSON/用户名返回 400，超大配置请求返回 413，UTF-8 安全截断。
-- 本地写接口拒绝跨站浏览器 Origin/Sec-Fetch-Site；这是跨站请求防护，不是登录认证。本地服务仍只应部署在可信局域网。
-- 体重页保留第三页：称重时最多 2Hz、空闲降到 5 秒节奏，显示记录日期/时间、本地保存与云连接/队列状态。
-- GitHub 显示更新时间/失败缓存，切换身份清缓存；贡献图至少 15 分钟更新，其他接口使用配置周期，失败间隔从请求结束计算。PR 查询失败显示 --，未读满一页显示 30+，贡献数不再误称 commits。
-- 管理页样式在板子本地提供，使用系统字体与符号，无运行时 CDN；后台标签页降低轮询，System 请求串行。修改 HTML/样式后运行 ./build-web.ps1 重新生成 CSS。
-- 纯配置/patch、持久队列与页面渲染已拆分；./test-host.ps1 在电脑验证协议、CRC、UTF-8、配置与 outbox 迁移，CI 跑同一套逻辑。
-- /api/system 显示构建 revision；/api/sys 的栈字段改名为 http_stack_hwm_bytes，避免误当主任务栈。
-
-验证边界：原分区保留，无 OTA 分区迁移；CPU/BLE 扫描参数保持已验证值。进一步调频、睡眠或降低扫描窗口需要电流/捕获率实测，不能仅靠代码推算续航。本地配对登录、OTA 回滚与长期硬件故障注入仍需独立验证。
+更多功能、接口和运行限制见 [详细参考](docs/reference.md)。
