@@ -2,6 +2,7 @@
 
 Waveshare ESP32-S3-RLCD-4.2（N16R8）的 Rust 信息终端，使用 ESP-IDF v5.5.3。
 三页界面：System → GitHub → Weight；支持小米体重秤 BLE 接收、温湿度采集和 MQTT 上报。
+KEY 短按翻页；BOOT 短按切换屏幕正向／倒置（180°），方向断电保存，网页镜屏保持正向。
 
 ## 目录
 

@@ -5,7 +5,7 @@ Waveshare ESP32-S3-RLCD-4.2(N16R8)开发板的 Rust 三页信息终端，基于
 
 ## 小米体重秤 2（新增）
 
-启动联网后默认打开 **System** 页，体重页排在最后；KEY / BOOT 按 System → GitHub → Weight 顺序切换主页面。接收指定小米体重秤
+启动联网后默认打开 **System** 页，体重页排在最后；KEY 短按按 System → GitHub → Weight 顺序切换主页面。BOOT 短按将物理屏幕在 0° / 180° 间切换，不改变页面；方向保存到 NVS，重启后恢复，网页镜屏始终保持正向。按住 BOOT 上电仍进入下载模式；中间 PWR 键仍负责电源。接收指定小米体重秤
 `70:87:9E:41:24:A0` 的 `0x181D` 广播：实时显示公斤数和 MEASURING / STABLE 状态，
 15 秒没有新广播或离秤后显示 LAST STABLE READING，不把旧值冒充实时值。
 

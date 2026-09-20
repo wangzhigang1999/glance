@@ -125,6 +125,15 @@ fn main() -> anyhow::Result<()> {
         AnyOutputPin::from(peripherals.pins.gpio41),
     )?;
     let mut display = Display::new(st7305);
+    let mut screen_flipped = config_store.screen_flipped().unwrap_or_else(|e| {
+        log::warn!("screen orientation load failed: {e:#}");
+        false
+    });
+    display.set_flipped(screen_flipped);
+    log::info!(
+        "Screen orientation: {} degrees",
+        if screen_flipped { 180 } else { 0 }
+    );
     display.init()?;
     log::info!("Display ready (400x300 landscape)");
     // 开机除斑:N 次黑-白翻转,消除反射式 LCD 的液晶分子残影/黑斑
@@ -166,7 +175,7 @@ fn main() -> anyhow::Result<()> {
     log::info!("Init battery ADC on GPIO4");
     let mut battery = Battery::new(peripherals.adc1, peripherals.pins.gpio4)?;
 
-    // ---- 按钮:BOOT(GPIO0) + KEY(GPIO18),任一按下都切页 ----
+    // ---- 按钮:BOOT(GPIO0) 翻转屏幕，KEY(GPIO18) 切页 ----
     // 板上三键:BOOT / KEY / PWR(独立电源IC,长按关机)
     log::info!("Init buttons: BOOT=GPIO0, KEY=GPIO18");
     let mut btn_boot = Button::new(AnyIOPin::from(peripherals.pins.gpio0))?;
@@ -334,9 +343,26 @@ fn main() -> anyhow::Result<()> {
             )
         };
 
-        // 扫两个按钮 + HTTP /next + 自动翻页,任一触发切页
+        // BOOT 只切换物理屏幕方向；KEY / HTTP / 自动翻页独立运行。
         let boot_edge = btn_boot.poll_pressed();
         let key_edge = btn_key.poll_pressed();
+        if boot_edge {
+            let flipped = !screen_flipped;
+            match config_store.save_screen_flipped(flipped) {
+                Ok(()) => {
+                    screen_flipped = flipped;
+                    display.set_flipped(flipped);
+                    if let Err(e) = display.flush() {
+                        log::warn!("screen orientation flush failed: {e:#}");
+                    }
+                    log::info!(
+                        "Screen orientation saved: {} degrees",
+                        if flipped { 180 } else { 0 }
+                    );
+                }
+                Err(e) => log::warn!("screen orientation save failed: {e:#}"),
+            }
+        }
         let http_next = http_next_flag.swap(false, Ordering::Relaxed);
         let auto_due = auto_rotate && last_rotate.elapsed() >= auto_rotate_period;
         let main_page_switch = key_edge || http_next || auto_due;
@@ -351,11 +377,6 @@ fn main() -> anyhow::Result<()> {
                 auto_due,
                 page
             );
-            true
-        } else if boot_edge {
-            page = page.next();
-            last_rotate = Instant::now();
-            log::info!("Page switch (BOOT) -> {:?}", page);
             true
         } else {
             false

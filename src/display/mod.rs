@@ -16,6 +16,7 @@
 //! ```
 
 pub mod framebuffer;
+mod orientation;
 pub mod st7305;
 
 use anyhow::Result;
@@ -34,6 +35,7 @@ pub use st7305::St7305;
 pub struct Display<'d> {
     driver: St7305<'d>,
     fb: FrameBuffer,
+    flipped: bool,
 }
 
 impl<'d> Display<'d> {
@@ -41,6 +43,7 @@ impl<'d> Display<'d> {
         Self {
             driver,
             fb: FrameBuffer::new(),
+            flipped: false,
         }
     }
 
@@ -69,8 +72,19 @@ impl<'d> Display<'d> {
 
     /// 把 framebuffer 全量送到 ST7305。
     pub fn flush(&mut self) -> Result<()> {
-        self.driver.write_frame(self.fb.raw())?;
-        Ok(())
+        if self.flipped {
+            orientation::rotate_180(self.fb.raw_mut());
+        }
+        let result = self.driver.write_frame(self.fb.raw());
+        // 即使 SPI 写入失败，也恢复逻辑帧，保证后续绘制和网页镜屏方向一致。
+        if self.flipped {
+            orientation::rotate_180(self.fb.raw_mut());
+        }
+        result
+    }
+
+    pub fn set_flipped(&mut self, flipped: bool) {
+        self.flipped = flipped;
     }
 
     /// 暴露 fb 原始字节供镜屏/调试使用(不改动)

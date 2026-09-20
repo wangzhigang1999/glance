@@ -13,3 +13,6 @@ pub mod outbox;
 pub mod config;
 #[path = "../../src/config/patch.rs"]
 pub mod config_patch;
+
+#[path = "../../src/display/orientation.rs"]
+pub mod orientation;

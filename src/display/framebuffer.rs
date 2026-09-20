@@ -54,7 +54,7 @@ impl FrameBuffer {
         unsafe { core::slice::from_raw_parts(self.ptr, BUF_LEN) }
     }
 
-    fn raw_mut(&mut self) -> &mut [u8] {
+    pub(super) fn raw_mut(&mut self) -> &mut [u8] {
         unsafe { core::slice::from_raw_parts_mut(self.ptr, BUF_LEN) }
     }
 

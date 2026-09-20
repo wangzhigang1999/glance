@@ -36,6 +36,16 @@ const K_TZ_OFF: &str = "tz_off";
 const K_SF_N: &str = "sf_n";
 
 impl ConfigStore {
+    /// 独立保存安装方向，避免网页保存普通配置时覆盖按键设置。
+    pub fn screen_flipped(&self) -> Result<bool> {
+        Ok(self.nvs.get_u8("screen_flip")?.unwrap_or(0) != 0)
+    }
+
+    pub fn save_screen_flipped(&self, flipped: bool) -> Result<()> {
+        self.nvs.set_u8("screen_flip", u8::from(flipped))?;
+        Ok(())
+    }
+
     pub fn new(partition: EspDefaultNvsPartition) -> Result<Self> {
         let nvs = EspNvs::new(partition, "cfg", true).context("open NVS namespace 'cfg'")?;
         Ok(Self { nvs })
