@@ -23,7 +23,8 @@ jobs:
       - uses: esp-rs/xtensa-toolchain@v1.7.0
         with:
           buildtargets: esp32s3
-          version: '1.93.0.0'
+          version: '1.97.0.0'
+          name: esp197
           ldproxy: true
       - name: Install native build dependencies
         run: sudo apt-get update && sudo apt-get install -y libudev-dev libssl-dev pkg-config ninja-build cmake

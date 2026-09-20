@@ -16,11 +16,11 @@ try {
     $env:Path = "$PythonHome;$env:Path"
     $env:IDF_PATH = $IdfHome
     $env:CARGO_TARGET_DIR = $TargetDir
-    if (-not $env:LIBCLANG_PATH) {
-        $sysroot = (& rustc +esp --print sysroot).Trim()
-        if ($LASTEXITCODE -ne 0) { throw 'Cannot locate esp toolchain.' }
-        $env:LIBCLANG_PATH = Join-Path $sysroot 'xtensa-esp32-elf-clang\esp-clang\bin\libclang.dll'
-    }
+    Push-Location (Split-Path $PSScriptRoot -Parent)
+    try { $sysroot = (& rustc --print sysroot).Trim() }
+    finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot locate configured ESP toolchain.' }
+    $env:LIBCLANG_PATH = Join-Path $sysroot 'xtensa-esp32-elf-clang\esp-clang\bin\libclang.dll'
     $buildArgs = @((Join-Path $PSScriptRoot 'build.py'))
     if ($Public) { $buildArgs += '--public' }
     & $pythonExe @buildArgs

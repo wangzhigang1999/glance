@@ -23,6 +23,12 @@ Cargo 自动发现的 `build.rs`、`rust-toolchain.toml`、`rustfmt.toml` 保留
 
 ## 本地开发
 
+Rust 工具链固定为 ESP Rust 1.97.0.0（本地名称 `esp197`），ESP-IDF 保持 v5.5.3：
+
+```sh
+espup install --name esp197 --toolchain-version 1.97.0.0 --targets esp32s3 --std
+```
+
 Windows（脚本提供本机默认路径，可用参数覆盖）：
 
 ```powershell
@@ -32,7 +38,7 @@ Windows（脚本提供本机默认路径，可用参数覆盖）：
 just flash               # 默认 COM3，可用 just --set port COM5 flash 覆盖
 ```
 
-Linux：安装 `espup` 的 esp32s3 工具链（1.93.0.0）、`ldproxy`、Python 3.11、CMake/Ninja，
+Linux：安装上述 esp32s3 工具链、`ldproxy`、Python 3.11、CMake/Ninja，
 加载 espup 的环境导出文件，然后执行：
 
 ```sh
