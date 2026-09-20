@@ -20,6 +20,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          python - <<'PY'
+          import os, re, tomllib
+          from pathlib import Path
+          version = tomllib.loads(Path('Cargo.toml').read_text())['package']['version']
+          tag = os.environ['GITHUB_REF_NAME']
+          if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?', tag) or tag != f'v{version}':
+              raise SystemExit(f'Release tag {tag!r} must match Cargo.toml version v{version}')
+          PY
       - uses: esp-rs/xtensa-toolchain@v1.7.0
         with:
           buildtargets: esp32s3
@@ -44,3 +55,53 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 30
+  release-tests:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/host-tests.yml
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [firmware, release-tests]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: glance-esp32s3-${{ github.sha }}
+          path: dist
+      - name: Verify and bundle public firmware
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd dist
+          sha256sum --check SHA256SUMS
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          info = json.loads(Path('build-info.json').read_text())
+          assert info['public_build'] is True
+          assert info['revision'] == os.environ['GITHUB_SHA']
+          PY
+          zip -q "../glance-esp32s3-${TAG}.zip" ./*
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" --json isDraft > release.json; then
+            if [ "$(jq -r .isDraft release.json)" != true ]; then
+              echo 'Release already published; leaving its assets unchanged.'
+              exit 0
+            fi
+          else
+            prerelease=()
+            [[ "$TAG" == *-* ]] && prerelease+=(--prerelease)
+            gh release create "$TAG" --verify-tag --draft --title "Glance ${TAG}" \
+              --generate-notes --notes-file docs/release-notes.md "${prerelease[@]}"
+          fi
+          gh release upload "$TAG" "glance-esp32s3-${TAG}.zip" dist/* --clobber
+          gh release edit "$TAG" --draft=false

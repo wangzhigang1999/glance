@@ -54,6 +54,18 @@ Windows 的短构建路径和 libclang 定位由脚本处理，不再写入共�
 
 ## 下载 CI 固件
 
+推送与 `Cargo.toml` 版本一致的标签（例如 `v0.2.1`），CI 会在固件构建和主机测试
+都成功后自动创建 GitHub Release，附上 ZIP 烧录包、各镜像、校验和及烧录说明。
+`v0.2.2-rc.1` 这类标签会发布为预发布版；普通分支推送仍只生成 Actions artifact。
+
+```sh
+git tag -a v0.2.1 -m "Glance v0.2.1"
+git push origin v0.2.1
+```
+
+发布过程先创建草稿、上传全部附件，再公开。失败后可重跑同一次工作流；已公开版本
+不会被覆盖，需要修改固件时请升版本并使用新标签。
+
 在 GitHub **Actions → Build flashable firmware → 成功运行 → Artifacts** 下载
 `glance-esp32s3-<commit>`。push、PR 和手动运行均会构建，产物保留 30 天。
 
