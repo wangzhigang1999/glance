@@ -23,11 +23,15 @@ Cargo 自动发现的 `build.rs`、`rust-toolchain.toml`、`rustfmt.toml` 保留
 
 ## 本地开发
 
-Rust 工具链固定为 ESP Rust 1.97.0.0（本地名称 `esp197`），ESP-IDF 保持 v5.5.3：
+Rust 工具链固定为 ESP Rust 1.98.1.0（本地名称 `esp198`），ESP-IDF 保持 v5.5.3：
 
 ```sh
-espup install --name esp197 --toolchain-version 1.97.0.0 --targets esp32s3 --std
+espup install --name esp198 --toolchain-version 1.98.1.0 --targets esp32s3 --std
 ```
+
+1.98.1.0 是上游预发布工具链。本固件在 1.97.0.0 上编译浮点 JSON 解析时触发
+LLVM `PCREL_WRAPPER` 内部错误；相同最小复现已在 1.98.1.0 编译通过。
+参见 [上游问题 #277](https://github.com/esp-rs/rust/issues/277)。
 
 Windows（脚本提供本机默认路径，可用参数覆盖）：
 
