@@ -4,5 +4,10 @@
 /data/
 /dist/
 __pycache__/
+/web/node_modules/
+/web/dist/
 /sdkconfig
 /sdkconfig.*
+
+/tests/host/target/
+/.claude/

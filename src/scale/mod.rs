@@ -1,5 +1,7 @@
+mod history;
 pub mod mibeacon;
 pub mod protocol;
+pub use history::Measurement;
 
 enum Advertisement {
     Scale(protocol::Reading, i32, std::time::Instant),
@@ -19,20 +21,11 @@ use esp_idf_svc::{
     hal::modem::BluetoothModem,
     nvs::{EspDefaultNvsPartition, EspNvs},
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 pub const ADDRESS: &str = "70:87:9E:41:24:A0";
 const MAC: [u8; 6] = [0x70, 0x87, 0x9e, 0x41, 0x24, 0xa0];
-const HISTORY_LIMIT: usize = 16;
 pub type SharedScale = Arc<Mutex<Snapshot>>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Measurement {
-    #[serde(default)]
-    pub event_id: String,
-    pub kg: f32,
-    pub unix_secs: Option<i64>,
-}
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Snapshot {
@@ -77,23 +70,22 @@ fn run(
     shared: SharedScale,
 ) -> anyhow::Result<()> {
     let nvs = EspNvs::new(partition.clone(), "scale", true)?;
-    let mut buf = [0u8; 2048];
+    let mut initial_save = None;
+    let mut buf = vec![0u8; history::MAX_BYTES];
     if let Some(data) = nvs.get_blob("history", &mut buf)? {
-        match serde_json::from_slice::<Vec<Measurement>>(data) {
+        match history::decode(data) {
             Ok(mut history) => {
-                let original_len = history.len();
-                history.retain(|r| protocol::valid_weight(r.kg));
-                if history.len() > HISTORY_LIMIT {
-                    history.drain(..history.len() - HISTORY_LIMIT);
-                }
-                if history.len() != original_len {
-                    nvs.set_blob("history", &serde_json::to_vec(&history)?)?;
+                let changed = history::retain_week(&mut history, crate::net::time::unix_secs());
+                if changed || !data.starts_with(b"WH01") {
+                    initial_save = Some(history.clone());
                 }
                 shared.lock().unwrap().history = history;
             }
             Err(e) => log::warn!("Ignoring invalid scale history: {e}"),
         }
     }
+    drop(buf);
+    shared.lock().unwrap().storage_pending = initial_save.is_some();
     let gap = EspBleGap::new(BtDriver::<Ble>::new(modem, Some(partition))?)?;
     let mut clock = mibeacon::Decoder::new();
     shared.lock().unwrap().clock.configured = clock.configured();
@@ -153,19 +145,27 @@ fn run(
     let boot = Instant::now();
     let mut session = protocol::Session::default();
     let mut replay_guard = true;
-    let mut pending_save: Option<Vec<Measurement>> = None;
+    let mut pending_save = initial_save;
     let mut save_retry = Instant::now();
+    let mut next_prune = Instant::now();
     loop {
+        if Instant::now() >= next_prune {
+            let mut state = shared.lock().unwrap();
+            if history::retain_week(&mut state.history, crate::net::time::unix_secs()) {
+                pending_save = Some(state.history.clone());
+                state.storage_pending = true;
+                save_retry = Instant::now();
+            }
+            next_prune = Instant::now() + Duration::from_secs(60);
+        }
         shared.lock().unwrap().dropped_packets =
             dropped.load(std::sync::atomic::Ordering::Relaxed) as u64;
         if pending_save.is_some() && Instant::now() >= save_retry {
-            let result = serde_json::to_vec(pending_save.as_ref().unwrap())
-                .map_err(anyhow::Error::from)
-                .and_then(|bytes| {
-                    nvs.set_blob("history", &bytes)
-                        .map(|_| ())
-                        .map_err(anyhow::Error::from)
-                });
+            let result = history::encode(pending_save.as_ref().unwrap()).and_then(|bytes| {
+                nvs.set_blob("history", &bytes)
+                    .map(|_| ())
+                    .map_err(anyhow::Error::from)
+            });
             match result {
                 Ok(()) => {
                     pending_save = None;
@@ -215,9 +215,6 @@ fn run(
                             .is_some_and(|(n, t)| n >= t && n - t < 90)
                 });
             if save && !duplicate {
-                if s.history.len() == HISTORY_LIMIT {
-                    s.history.remove(0);
-                }
                 s.history.push(Measurement {
                     event_id: format!(
                         "{:08x}{:08x}",
@@ -227,6 +224,7 @@ fn run(
                     kg: reading.kg,
                     unix_secs: now,
                 });
+                history::retain_week(&mut s.history, now);
                 Some(s.history.clone())
             } else {
                 None
@@ -251,7 +249,7 @@ pub fn register(
     server.fn_handler("/api/weight", Method::Get, move |req| -> anyhow::Result<()> {
         let body = {
             let s = shared.lock().unwrap();
-            serde_json::json!({"device_address": ADDRESS, "age_seconds": s.last_seen.map(|t| t.elapsed().as_secs()), "scale": &*s}).to_string()
+            serde_json::json!({"history_days": 7, "history_capacity": history::CAPACITY, "history_at_capacity": s.history.len() >= history::CAPACITY, "device_address": ADDRESS, "age_seconds": s.last_seen.map(|t| t.elapsed().as_secs()), "scale": &*s}).to_string()
         };
         req.into_response(200, Some("OK"), &[("Content-Type","application/json"),("Cache-Control","no-store")])?.write_all(body.as_bytes())?;
         Ok(())

@@ -21,6 +21,28 @@ fn main() {
         std::fs::read(&credentials).unwrap_or_else(|_| b"{}".to_vec())
     };
     let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    let home_config = "data/mijia-devices.json";
+    println!("cargo:rerun-if-changed={home_config}");
+    std::fs::write(
+        output.join("mijia_config.json"),
+        if public_build {
+            b"[]".to_vec()
+        } else {
+            std::fs::read(home_config).unwrap_or_else(|_| b"[]".to_vec())
+        },
+    )
+    .unwrap();
+    let admin_auth = "data/admin-auth.json";
+    println!("cargo:rerun-if-changed={admin_auth}");
+    std::fs::write(
+        output.join("admin_auth.json"),
+        if public_build {
+            b"{}".to_vec()
+        } else {
+            std::fs::read(admin_auth).unwrap_or_else(|_| b"{}".to_vec())
+        },
+    )
+    .unwrap();
     std::fs::write(output.join("iot_config.json"), contents).unwrap();
     let keys = std::env::var("RLCD_CLOCK_KEYS").unwrap_or_else(|_| "data/bindkeys.json".into());
     println!("cargo:rerun-if-env-changed=RLCD_CLOCK_KEYS");
@@ -37,7 +59,5 @@ fn main() {
     embuild::espidf::sysenv::output();
     println!("cargo:rerun-if-changed=web/prov_form.html");
     println!("cargo:rerun-if-changed=web/prov_done.html");
-    println!("cargo:rerun-if-changed=web/live.html");
-    println!("cargo:rerun-if-changed=web/settings.html");
-    println!("cargo:rerun-if-changed=web/system.html");
+    println!("cargo:rerun-if-changed=web/dist");
 }

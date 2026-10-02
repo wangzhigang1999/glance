@@ -98,19 +98,7 @@ pub fn clock_source_str() -> &'static str {
     }
 }
 
-const SYSTEM_HTML: &str = include_str!("../../web/system.html");
-
 pub fn register(server: &mut EspHttpServer<'static>, shared: SharedSystem) -> Result<()> {
-    server.fn_handler(
-        "/system.html",
-        Method::Get,
-        |req| -> Result<(), anyhow::Error> {
-            let mut resp = req.into_ok_response()?;
-            resp.write_all(SYSTEM_HTML.as_bytes())?;
-            Ok(())
-        },
-    )?;
-
     let shared_for_get = shared.clone();
     server.fn_handler(
         "/api/system",

@@ -1,8 +1,10 @@
 # Glance · ESP32-S3-RLCD-4.2
 
 Waveshare ESP32-S3-RLCD-4.2（N16R8）的 Rust 信息终端，使用 ESP-IDF v5.5.3。
-三页界面：System → GitHub → Weight；支持小米体重秤 BLE 接收、温湿度采集和 MQTT 上报。
+四页界面：System → GitHub → Weight → Home；支持小米体重秤 BLE 接收、温湿度采集和 MQTT 上报。
 KEY 短按翻页；BOOT 短按切换屏幕正向／倒置（180°），方向断电保存，网页镜屏保持正向。
+固件仅通过 USB 更新：`./scripts/flash-usb.ps1 --port COM3`，详见 [烧录说明](docs/flashing.md)。
+家居设备可在网页扫码添加并持久保存，无需反复刷固件。
 
 ## 目录
 
@@ -14,7 +16,7 @@ docs/                 功能说明、开发指南和烧录说明
 scripts/              构建、测试、打包脚本
 src/                  Rust 固件（hw / net / scale / ui / config）
 tests/host/           无需开发板的回归测试
-web/                  设备本地管理页与样式
+web/                  React + Tailwind + shadcn/ui 管理界面
 Cargo.toml / Cargo.lock   依赖及锁定版本
 build.rs              Cargo 构建入口与私密配置注入
 ```
@@ -38,7 +40,7 @@ Windows（脚本提供本机默认路径，可用参数覆盖）：
 
 ```powershell
 ./scripts/test-host.ps1
-./scripts/build-web.ps1   # 修改网页后重新生成本地 CSS，需要 Node/npm
+./scripts/build-web.ps1   # 修改前端后构建静态资源，需要 Node 24/npm
 ./scripts/build-local.ps1
 just flash               # 默认 COM3，可用 just --set port COM5 flash 覆盖
 ```
@@ -47,6 +49,8 @@ Linux：安装上述 esp32s3 工具链、`ldproxy`、Python 3.11、CMake/Ninja�
 加载 espup 的环境导出文件，然后执行：
 
 ```sh
+npm --prefix web ci
+npm --prefix web run build
 python scripts/build.py --public
 ```
 

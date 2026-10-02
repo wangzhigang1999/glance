@@ -21,7 +21,9 @@
 //! ```
 
 mod github;
+mod home;
 mod weight;
+mod weight_daily;
 use core::fmt::Write;
 
 use embedded_graphics::{
@@ -47,6 +49,7 @@ use crate::display::{Display, HEIGHT, WIDTH};
 
 #[derive(Debug, Clone)]
 pub struct AppState {
+    pub home: crate::net::miio::Snapshot,
     pub scale: crate::scale::Snapshot,
     pub cloud_connected: bool,
     pub cloud_queued: usize,
@@ -130,6 +133,7 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
+            home: crate::net::miio::Snapshot::default(),
             scale: crate::scale::Snapshot::default(),
             cloud_connected: false,
             cloud_queued: 0,
@@ -198,6 +202,7 @@ const Y_SEP_STATS: i32 = 276;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
+    Home,
     Weight,
     Dashboard,
     Github,
@@ -206,13 +211,14 @@ pub enum Page {
 impl Page {
     pub fn next(self) -> Self {
         match self {
-            Self::Weight => Self::Dashboard,
+            Self::Weight => Self::Home,
+            Self::Home => Self::Dashboard,
             Self::Dashboard => Self::Github,
             Self::Github => Self::Weight,
         }
     }
 
-    pub const ALL: &'static [Page] = &[Page::Dashboard, Page::Github, Page::Weight];
+    pub const ALL: &'static [Page] = &[Page::Dashboard, Page::Github, Page::Weight, Page::Home];
 
     pub fn index(self) -> usize {
         Self::ALL.iter().position(|p| *p == self).unwrap_or(0)
@@ -248,6 +254,7 @@ pub fn render(
     }
 
     match page {
+        Page::Home => home::render_home(target, state, &tiny, &micro)?,
         Page::Weight => render_weight(target, state, &tiny, &micro)?,
         Page::Dashboard => render_dashboard(target, state, &tiny, &micro, &th_val, &th_label)?,
         Page::Github => render_github(target, state, &tiny, &micro, &header, &th_val)?,

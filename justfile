@@ -16,10 +16,11 @@ test:
     ./scripts/test-host.ps1
 
 flash: build
-    espflash flash --flash-size 16mb --partition-table config/partitions.csv {{elf}} --port {{port}}
+    ./scripts/flash-usb.ps1 --port {{port}}
 
 monitor:
     espflash monitor --port {{port}}
 
 flash-monitor: build
-    espflash flash --flash-size 16mb --partition-table config/partitions.csv {{elf}} --port {{port}} --monitor
+    ./scripts/flash-usb.ps1 --port {{port}}
+    espflash monitor --port {{port}}

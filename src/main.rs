@@ -83,6 +83,8 @@ fn main() -> anyhow::Result<()> {
     let peripherals = Peripherals::take()?;
     let sys_loop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
+    net::admin_auth::initialize(nvs.clone())?;
+    net::miio::initialize(nvs.clone())?;
 
     // ---- Runtime config(NVS + SharedConfig);开机就得到,splash_flash 等要用 ----
     let config_store = Arc::new(ConfigStore::new(nvs.clone())?);
@@ -258,8 +260,13 @@ fn main() -> anyhow::Result<()> {
     // ---- 屏幕镜像 HTTP 服务 + 运行时配置 API + 硬件总览 ----
     let screen_shared = screen_http::new_shared_fb();
     let system_shared = system_http::new_shared();
-    let telemetry_shared =
-        net::telemetry::spawn(nvs.clone(), system_shared.clone(), scale_shared.clone());
+    let home_shared = net::miio::spawn(system_shared.clone());
+    let telemetry_shared = net::telemetry::spawn(
+        nvs.clone(),
+        system_shared.clone(),
+        scale_shared.clone(),
+        home_shared.clone(),
+    );
     let http_next_flag = Arc::new(AtomicBool::new(false));
     let _screen_server = match screen_http::start(
         screen_shared.clone(),
@@ -271,6 +278,7 @@ fn main() -> anyhow::Result<()> {
         system_shared.clone(),
         scale_shared.clone(),
         telemetry_shared.clone(),
+        home_shared.clone(),
     ) {
         Ok(s) => Some(s),
         Err(e) => {
@@ -389,6 +397,7 @@ fn main() -> anyhow::Result<()> {
             && (revision != scale_revision
                 || last_scale_refresh.elapsed() >= Duration::from_secs(5));
         if page_changed || due || scale_due {
+            state.home = net::miio::snapshot(&home_shared);
             state.scale = scale_shared.lock().unwrap().clone();
             state.tz_offset = tz_off;
             let cloud = telemetry_shared.lock().unwrap().clone();

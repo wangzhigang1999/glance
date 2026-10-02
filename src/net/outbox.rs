@@ -4,6 +4,8 @@ use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
 
 pub const QUEUE_LIMIT: usize = 24;
+// Must cover every retained local reading to prevent already-ACKed history replay.
+pub const SEEN_LIMIT: usize = 128;
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Pending {
     pub key: String,
@@ -39,7 +41,7 @@ impl Durable {
     pub fn acknowledge(&mut self) {
         if let Some(p) = self.pending.take() {
             self.seen.push(p.key);
-            if self.seen.len() > 32 {
+            if self.seen.len() > SEEN_LIMIT {
                 self.seen.remove(0);
             }
         }

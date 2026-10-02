@@ -1,0 +1,122 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: #fff;
+  --color-secondary: #f1f3ef;
+  --color-secondary-foreground: #343b32;
+  --color-muted: #f3f4f1;
+  --color-muted-foreground: #73796f;
+  --color-accent: #eef2e9;
+  --color-accent-foreground: #354a2d;
+  --color-destructive: #ba443a;
+  --color-border: #e4e7e0;
+  --color-input: #dde2d8;
+  --color-ring: #889c77;
+  --color-popover: #fff;
+  --color-popover-foreground: #262c24;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+}
+:root {
+  --background: #fafbf9;
+  --foreground: #262c24;
+  --primary: #4c6540;
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    "Microsoft YaHei",
+    sans-serif;
+  color-scheme: light;
+}
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply m-0 bg-background text-foreground antialiased;
+    font-size: 16px;
+  }
+  button,
+  a,
+  input,
+  select {
+    -webkit-tap-highlight-color: transparent;
+  }
+  button:not(:disabled),
+  summary {
+    cursor: pointer;
+  }
+  input,
+  select {
+    font-size: 16px !important;
+  }
+  button:focus-visible,
+  a:focus-visible,
+  select:focus-visible {
+    outline: 2px solid #889c77;
+    outline-offset: 3px;
+  }
+  ::selection {
+    background: #dfe9d6;
+  }
+}
+.panel {
+  @apply min-w-0 rounded-xl border bg-white;
+}
+.caption {
+  @apply text-sm leading-relaxed text-muted-foreground;
+}
+.field {
+  @apply space-y-2;
+}
+.field label {
+  @apply text-sm font-medium;
+}
+.section-title {
+  @apply text-base font-semibold tracking-tight;
+}
+.soft-grid {
+  background-image: radial-gradient(#cbd3c1 0.6px, transparent 0.6px);
+  background-size: 18px 18px;
+}
+.data-row {
+  @apply flex items-start justify-between gap-3 sm:gap-6 border-b py-3 text-sm last:border-0;
+}
+.data-row dd {
+  @apply min-w-0 [overflow-wrap:anywhere] text-right font-medium tabular-nums;
+}
+.native-select {
+  @apply h-10 rounded-md border bg-white px-3 text-sm;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Keep touch controls usable without shrinking the content on narrow phones. */
+@media (max-width: 639px) {
+  [data-slot="button"], .native-select, [data-slot="input"] {
+    min-height: 44px;
+  }
+  [data-slot="button"][data-size^="icon"] {
+    min-width: 44px;
+  }
+  .field label { font-size: 15px; }
+  [data-slot="switch"] { position: relative; }
+  [data-slot="switch"]::before {
+    content: "";
+    position: absolute;
+    inset: -12px -6px;
+  }
+}

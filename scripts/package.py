@@ -2,9 +2,9 @@
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -14,9 +14,10 @@ def main():
         raise SystemExit("Packaging requires RLCD_PUBLIC_BUILD=1 and a fresh public build.")
     target = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")).resolve()
     release = target / "xtensa-esp32s3-espidf/release"
-    for name in ("iot_config.json", "clock_keys.json"):
+    for name, empty in (("iot_config.json", {}), ("clock_keys.json", {}),
+                        ("admin_auth.json", {}), ("mijia_config.json", [])):
         configs = list((release / "build").glob(f"firmware-*/out/{name}"))
-        if not configs or any(json.loads(p.read_text()) != {} for p in configs):
+        if not configs or any(json.loads(p.read_text()) != empty for p in configs):
             raise SystemExit(f"Expected empty public build outputs: {name}")
     dest = ROOT / "dist"
     if dest.exists() and any(dest.iterdir()):

@@ -1,7 +1,7 @@
 # ESP32-S3-RLCD-4.2 分区表(16MB Flash)
 #
 # 录音功能下线后,esp-sr 神经网络模型分区和 SPIFFS 录音兜底分区都不再需要,
-# 保留 factory 4MB 给 WiFi + 业务代码。剩余 ~12MB 留白,后续若加大功能再切出来。
+# 保留已有分区地址以兼容 USB 升级；原 OTA 槽闲置，不再提供远程更新。
 #
 # 布局:
 #   0x00000  ─ 0x08FFF   bootloader(ESP-IDF 自动,不在本表)
@@ -13,3 +13,7 @@
 nvs,        data, nvs,     0x9000,   0x6000,
 phy_init,   data, phy,     0xf000,   0x1000,
 factory,    app,  factory, 0x10000,  0x400000,
+lake,       data, 0x81,    0x410000, 0x200000,
+otadata,    data, ota,     0x610000, 0x2000,
+ota_0,      app,  ota_0,   0x620000, 0x400000,
+ota_1,      app,  ota_1,   0xa20000, 0x400000,

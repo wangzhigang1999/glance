@@ -82,6 +82,7 @@ pub fn spawn(
     partition: EspDefaultNvsPartition,
     system: SharedSystem,
     scale: SharedScale,
+    home: super::miio::SharedHome,
 ) -> SharedTelemetry {
     let status = Arc::new(Mutex::new(Status::default()));
     let output = status.clone();
@@ -96,6 +97,7 @@ pub fn spawn(
                     system.clone(),
                     scale.clone(),
                     worker_output.clone(),
+                    home.clone(),
                 ) {
                     Ok(()) => break, // Unconfigured device: no credentials, no network attempts.
                     Err(e) => {
@@ -118,6 +120,7 @@ fn run(
     system: SharedSystem,
     scale: SharedScale,
     status: SharedTelemetry,
+    home: super::miio::SharedHome,
 ) -> anyhow::Result<()> {
     let Ok(credentials) = serde_json::from_str::<Credentials>(CONFIG) else {
         status.lock().unwrap().error = "No private MQTT configuration".into();
@@ -155,10 +158,37 @@ fn run(
     let mut deadline = Instant::now();
     let mut retry_at = Instant::now();
     let mut backoff = 1u64;
+    let mut home_sent = [0u64; 16];
+    let mut next_home_sample = Instant::now() + Duration::from_secs(15);
     let mut inflight: [Option<(u32, Instant)>; 2] = [None, None];
     loop {
         let now = Instant::now();
         let sys = system.read().unwrap().clone();
+        if now >= next_home_sample {
+            for (i, d) in super::miio::snapshot(&home).devices.iter().enumerate() {
+                if d.generation == 0 || home_sent[i] == d.generation {
+                    continue;
+                }
+                let mut values = serde_json::Map::new();
+                values.insert(format!("{}_online", d.id), json!(d.online));
+                for (key, value) in &d.values {
+                    values.insert(format!("{}_{}", d.id, key), value.clone());
+                }
+                if climate.len() == 60 {
+                    climate.pop_front();
+                    status.lock().unwrap().climate_dropped += 1;
+                }
+                climate.push_back(sample(
+                    &boot_id,
+                    &mut seq,
+                    d.sampled_at.map(|t| t * 1000),
+                    d.uptime_ms,
+                    Value::Object(values),
+                ));
+                home_sent[i] = d.generation;
+            }
+            next_home_sample = now + Duration::from_secs(60);
+        }
         // Only enqueue newly authenticated clock measurements. Preserve receipt time,
         // never relabel an old clock value as a new sample every minute.
         let clock = scale.lock().unwrap().clock.clone();

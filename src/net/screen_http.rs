@@ -73,8 +73,6 @@ macro_rules! read_body {
     }};
 }
 
-const HTML: &str = include_str!("../../web/live.html");
-
 pub fn start(
     shared: SharedFb,
     next_flag: Arc<AtomicBool>,
@@ -85,37 +83,16 @@ pub fn start(
     system_shared: SharedSystem,
     scale_shared: crate::scale::SharedScale,
     telemetry_shared: crate::net::telemetry::SharedTelemetry,
+    home_shared: crate::net::miio::SharedHome,
 ) -> Result<EspHttpServer<'static>> {
     let srv_cfg = Configuration {
         stack_size: 10 * 1024,
+        max_uri_handlers: 40,
         ..Default::default()
     };
     let mut server = EspHttpServer::new(&srv_cfg)?;
-    for (path, css) in [
-        ("/live.css", include_str!("../../web/live.css")),
-        ("/settings.css", include_str!("../../web/settings.css")),
-        ("/logs.css", include_str!("../../web/logs.css")),
-        ("/system.css", include_str!("../../web/system.css")),
-    ] {
-        server.fn_handler(path, Method::Get, move |req| -> Result<(), anyhow::Error> {
-            req.into_response(
-                200,
-                Some("OK"),
-                &[
-                    ("Content-Type", "text/css; charset=utf-8"),
-                    ("Cache-Control", "no-cache"),
-                ],
-            )?
-            .write_all(css.as_bytes())?;
-            Ok(())
-        })?;
-    }
-
-    server.fn_handler("/", Method::Get, |req| -> Result<(), anyhow::Error> {
-        let mut resp = req.into_ok_response()?;
-        resp.write_all(HTML.as_bytes())?;
-        Ok(())
-    })?;
+    crate::net::web_ui::register(&mut server)?;
+    crate::net::miio::register(&mut server, home_shared)?;
 
     // ---- GET /api/sys: 实时系统快照,调试用 ----
     server.fn_handler(
@@ -160,16 +137,6 @@ pub fn start(
             ];
             let mut resp = req.into_response(200, Some("OK"), &headers)?;
             resp.write_all(s.as_bytes())?;
-            Ok(())
-        },
-    )?;
-
-    server.fn_handler(
-        "/settings",
-        Method::Get,
-        |req| -> Result<(), anyhow::Error> {
-            let mut resp = req.into_ok_response()?;
-            resp.write_all(SETTINGS_HTML.as_bytes())?;
             Ok(())
         },
     )?;
@@ -559,17 +526,6 @@ pub fn start(
         },
     )?;
 
-    // ---- GET /logs.html:简易日志查看页 ----
-    server.fn_handler(
-        "/logs.html",
-        Method::Get,
-        |req| -> Result<(), anyhow::Error> {
-            let mut resp = req.into_ok_response()?;
-            resp.write_all(LOGS_HTML.as_bytes())?;
-            Ok(())
-        },
-    )?;
-
     // ---- GET /logs.json?since=<seq>:增量拉日志(短轮询)----
     // esp-idf httpd 单 task 处理所有 handler,不能用 SSE 长连接(会卡死整个 server)。
     // 客户端按 1s 间隔轮询;首次 since=0 拿全量 history,之后用上次返回的 next_seq。
@@ -773,9 +729,6 @@ fn emit_config_json(c: &crate::config::RuntimeConfig, mask_token: bool) -> Strin
     };
     serde_json::to_string(&view).unwrap_or_else(|_| "{}".to_string())
 }
-
-const SETTINGS_HTML: &str = include_str!("../../web/settings.html");
-const LOGS_HTML: &str = include_str!("../../web/logs.html");
 
 /// 把 ST7305 本地 fb 编码成标准 1-bit BMP。
 fn encode_bmp(fb: &[u8]) -> Vec<u8> {
