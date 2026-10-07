@@ -1,90 +1,97 @@
-//! Compact device tiles; larger households rotate in groups of nine.
+//! Useful household status instead of a mostly online/offline device grid.
+use u8g2_fonts::fonts::u8g2_font_wqy16_t_gb2312;
+
 use super::*;
-use crate::net::miio::DeviceState;
 
-fn label(device: &DeviceState) -> String {
-    let model = device.model.as_str();
-    if model.contains("acpartner") {
-        // Stable suffix survives DHCP changes and distinguishes identical models.
-        let suffix = &device.id[device.id.len().saturating_sub(3)..];
-        format!("AC #{suffix}")
-    } else {
-        match model {
-            m if m.contains("humidifier") => "HUMIDIFIER",
-            m if m.contains("kettle") => "KETTLE",
-            m if m.contains("plug") => "SMART PLUG",
-            m if m.contains("gateway") => "HOME HUB",
-            m if m.contains("camera") => "CAMERA",
-            m if m.contains("airp") => "AIR PURIFIER",
-            m if m.contains("light") => "MONITOR LIGHT",
-            _ => "DEVICE",
-        }
-        .into()
-    }
-}
-
-fn reading(device: &DeviceState) -> (String, &'static str) {
-    if !device.online {
-        return ("--".into(), "OFFLINE");
-    }
-    let fields: &[(&str, &str)] = if device.model.contains("humidifier") {
-        &[("humidity_pct", "% RH")]
-    } else if device.model.contains("kettle") {
-        &[("temperature_c", "CELSIUS")]
-    } else {
-        &[("power_w", "WATTS"), ("pm25_ug_m3", "PM2.5 ug/m3")]
-    };
-    for &(key, unit) in fields {
-        if let Some(value) = device.values.get(key).and_then(|v| v.as_f64()) {
-            return (format!("{value:.0}"), unit);
-        }
-    }
-    match device.values.get("on").and_then(|v| v.as_bool()) {
-        Some(on) => (if on { "ON" } else { "OFF" }.into(), "POWER"),
-        None => ("READY".into(), "CONNECTED"),
-    }
+fn label(target: &mut Display<'_>, text: &str, x: i32, y: i32) {
+    let font = FontRenderer::new::<u8g2_font_wqy16_t_gb2312>();
+    let _ = font.render_aligned(
+        text,
+        Point::new(x, y),
+        VerticalPosition::Baseline,
+        HorizontalAlignment::Left,
+        FontColor::Transparent(BinaryColor::On),
+        target,
+    );
 }
 
 pub(super) fn render_home(
     target: &mut Display<'_>,
     state: &AppState,
-    tiny: &MonoTextStyle<'_, BinaryColor>,
-    micro: &MonoTextStyle<'_, BinaryColor>,
+    _tiny: &MonoTextStyle<'_, BinaryColor>,
+    _micro: &MonoTextStyle<'_, BinaryColor>,
 ) -> Result<(), core::convert::Infallible> {
-    let devices = &state.home.devices;
-    let online = devices.iter().filter(|d| d.online).count();
-    Text::new("HOME DEVICES", Point::new(14, 24), *tiny).draw(target)?;
-    Text::with_alignment(
-        &format!("{online}/{} ONLINE", devices.len()),
-        Point::new(384, 24),
-        *micro,
-        Alignment::Right,
-    )
-    .draw(target)?;
-    // Keep the type readable at 400x300 instead of squeezing sixteen devices into one page.
-    let pages = devices.len().div_ceil(9).max(1);
-    let page = (state.uptime_secs / 15) as usize % pages;
-    for (index, device) in devices.iter().skip(page * 9).take(9).enumerate() {
-        let x = 12 + (index % 3) as i32 * 128;
-        let y = 38 + (index / 3) as i32 * 78;
-        Rectangle::new(Point::new(x, y), Size::new(120, 70))
-            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-            .draw(target)?;
-        Text::new(&label(device), Point::new(x + 7, y + 14), *micro).draw(target)?;
-        let (value, unit) = reading(device);
-        Text::with_alignment(&value, Point::new(x + 60, y + 40), *tiny, Alignment::Center)
-            .draw(target)?;
-        Text::with_alignment(unit, Point::new(x + 60, y + 57), *micro, Alignment::Center)
-            .draw(target)?;
-    }
-    if devices.is_empty() {
-        Text::new("ADD DEVICES IN THE WEB APP", Point::new(28, 146), *micro).draw(target)?;
-    }
-    let footer = if pages > 1 {
-        format!("LOCAL / 60s     {}/{}", page + 1, pages)
+    let bt = &state.bluetooth;
+    label(target, "迈极炫灯", 18, 28);
+    label(
+        target,
+        if bt.lamp_ready {
+            "蓝牙已连接"
+        } else {
+            "蓝牙未连接"
+        },
+        280,
+        28,
+    );
+    Line::new(Point::new(18, 42), Point::new(382, 42))
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+        .draw(target)?;
+    let battery = if bt.lamp_ready { bt.battery } else { None };
+    let value = battery.map_or_else(|| "--".into(), |v| v.to_string());
+    let font = FontRenderer::new::<u8g2_font_logisoso58_tn>();
+    let _ = font.render_aligned(
+        value.as_str(),
+        Point::new(108, 128),
+        VerticalPosition::Baseline,
+        HorizontalAlignment::Center,
+        FontColor::Transparent(BinaryColor::On),
+        target,
+    );
+    label(target, "%", 171, 126);
+    label(target, "电量（设备估值）", 38, 158);
+    let power = if !bt.lamp_ready {
+        "状态未知".to_owned()
     } else {
-        "LOCAL READINGS / 60s".into()
+        match bt.level {
+            Some(0) => "灯已关闭".into(),
+            Some(v) => format!("亮度 {v} 档"),
+            None => "亮度待确认".into(),
+        }
     };
-    Text::new(&footer, Point::new(14, 291), *micro).draw(target)?;
+    label(target, &power, 239, 92);
+    label(target, "翻页器", 239, 125);
+    label(
+        target,
+        if bt.remote_ready {
+            "已连接"
+        } else {
+            "未连接"
+        },
+        239,
+        152,
+    );
+    let age = match (battery, bt.battery_age_s) {
+        (Some(_), Some(s)) if s < 60 => "电量刚刚更新".into(),
+        (Some(_), Some(s)) => format!("电量 {} 分钟前更新", s / 60),
+        _ => "等待新的电量读数".into(),
+    };
+    label(target, &age, 18, 191);
+    Line::new(Point::new(18, 210), Point::new(382, 210))
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+        .draw(target)?;
+    label(target, "室内温湿度", 18, 239);
+    let clock = &state.scale.clock;
+    let temp = clock
+        .temperature
+        .as_ref()
+        .filter(|r| r.received.elapsed().as_secs() < 600)
+        .map_or_else(|| "--".into(), |r| format!("{:.1}", r.value));
+    let rh = clock
+        .humidity
+        .as_ref()
+        .filter(|r| r.received.elapsed().as_secs() < 600)
+        .map_or_else(|| "--".into(), |r| format!("{:.0}", r.value));
+    label(target, &format!("{temp} ℃     {rh}%"), 18, 272);
+    label(target, "米家时钟", 302, 272);
     Ok(())
 }

@@ -49,6 +49,7 @@ use crate::display::{Display, HEIGHT, WIDTH};
 
 #[derive(Debug, Clone)]
 pub struct AppState {
+    pub bluetooth: crate::scale::bluetooth::DisplaySnapshot,
     pub home: crate::net::miio::Snapshot,
     pub scale: crate::scale::Snapshot,
     pub cloud_connected: bool,
@@ -133,6 +134,7 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
+            bluetooth: crate::scale::bluetooth::DisplaySnapshot::default(),
             home: crate::net::miio::Snapshot::default(),
             scale: crate::scale::Snapshot::default(),
             cloud_connected: false,

@@ -5,6 +5,8 @@
 //! Phase 3:SoftAP + HTTP 门户配网写 NVS
 
 pub mod activity;
+pub mod admin_auth;
+pub(crate) mod admin_policy;
 pub mod creds;
 mod gh_http;
 pub mod gh_worker;
@@ -14,8 +16,6 @@ pub mod miio;
 mod miio_config;
 mod miio_wire;
 pub mod notifications;
-pub mod admin_auth;
-mod admin_policy;
 pub mod prov_ap;
 pub mod screen_http;
 pub mod sntp;

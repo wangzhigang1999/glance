@@ -47,3 +47,7 @@ fn extended_history_never_replays_acknowledged_samples() {
         assert!(restored.contains(&format!("{index:016x}")));
     }
 }
+#[path = "../../src/scale/lamp_protocol.rs"]
+mod lamp_protocol;
+#[path = "../../src/scale/remote_gesture.rs"]
+mod remote_gesture;

@@ -5,6 +5,7 @@ Waveshare ESP32-S3-RLCD-4.2（N16R8）的 Rust 信息终端，使用 ESP-IDF v5.
 KEY 短按翻页；BOOT 短按切换屏幕正向／倒置（180°），方向断电保存，网页镜屏保持正向。
 固件仅通过 USB 更新：`./scripts/flash-usb.ps1 --port COM3`，详见 [烧录说明](docs/flashing.md)。
 家居设备可在网页扫码添加并持久保存，无需反复刷固件。
+蓝牙设备管理入口为 `/bluetooth`，支持 LP910 翻页器手势绑定和迈极炫灯控制，详见 [蓝牙管理](docs/bluetooth.md)。
 
 ## 目录
 

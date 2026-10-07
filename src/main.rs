@@ -396,7 +396,9 @@ fn main() -> anyhow::Result<()> {
             && last_scale_refresh.elapsed() >= Duration::from_millis(500)
             && (revision != scale_revision
                 || last_scale_refresh.elapsed() >= Duration::from_secs(5));
-        if page_changed || due || scale_due {
+        let home_due = page == Page::Home && last_scale_refresh.elapsed() >= Duration::from_secs(1);
+        if page_changed || due || scale_due || home_due {
+            state.bluetooth = scale::bluetooth::display_snapshot();
             state.home = net::miio::snapshot(&home_shared);
             state.scale = scale_shared.lock().unwrap().clone();
             state.tz_offset = tz_off;
@@ -724,3 +726,4 @@ fn copy_truncated<const N: usize>(dst: &mut heapless::String<N>, src: &str) {
         }
     }
 }
+mod bt_controller_fix;

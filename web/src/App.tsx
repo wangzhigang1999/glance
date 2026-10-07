@@ -6,6 +6,7 @@ import {
   Terminal,
   Cpu,
   House,
+  Bluetooth,
 } from "lucide-react";
 import { usePoll, type System } from "@/lib/api";
 import { ScreenPage } from "./pages/screen";
@@ -13,6 +14,7 @@ import { SystemPage } from "./pages/system";
 import { SettingsPage } from "./pages/settings";
 import { LogsPage } from "./pages/logs";
 import { HomePage } from "./pages/home";
+import { BluetoothPage } from "./pages/bluetooth";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -24,6 +26,7 @@ import {
 } from "@/components/ui/dialog";
 import "./index.css";
 const pages = [
+  { path: "/bluetooth", name: "蓝牙", title: "蓝牙管理", icon: Bluetooth },
   {
     path: "/",
     name: "屏幕",
@@ -166,6 +169,7 @@ export default function App() {
           {path === "/" && <ScreenPage system={system} />}
           {path === "/system.html" && <SystemPage system={system} />}
           {path === "/home" && <HomePage />}
+          {path === "/bluetooth" && <BluetoothPage />}
           {path === "/settings" && <SettingsPage onDirty={setDirty} />}
           {path === "/logs.html" && <LogsPage />}
           {!pages.some((p) => p.path === path) && (
@@ -177,7 +181,7 @@ export default function App() {
       </div>
       <nav
         aria-label="手机导航"
-        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t bg-white px-2 pb-[max(8px,env(safe-area-inset-bottom))] pt-2 lg:hidden"
+        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-6 border-t bg-white px-2 pb-[max(8px,env(safe-area-inset-bottom))] pt-2 lg:hidden"
       >
         {pages.map((p) => (
           <a

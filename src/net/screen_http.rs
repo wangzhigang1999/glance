@@ -87,11 +87,12 @@ pub fn start(
 ) -> Result<EspHttpServer<'static>> {
     let srv_cfg = Configuration {
         stack_size: 10 * 1024,
-        max_uri_handlers: 40,
+        max_uri_handlers: 48,
         ..Default::default()
     };
     let mut server = EspHttpServer::new(&srv_cfg)?;
     crate::net::web_ui::register(&mut server)?;
+    crate::scale::bluetooth::register(&mut server)?;
     crate::net::miio::register(&mut server, home_shared)?;
 
     // ---- GET /api/sys: 实时系统快照,调试用 ----

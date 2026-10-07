@@ -1,3 +1,6 @@
+pub mod bluetooth;
+mod lamp_protocol;
+mod remote_gesture;
 mod history;
 pub mod mibeacon;
 pub mod protocol;
@@ -86,47 +89,68 @@ fn run(
     }
     drop(buf);
     shared.lock().unwrap().storage_pending = initial_save.is_some();
-    let gap = EspBleGap::new(BtDriver::<Ble>::new(modem, Some(partition))?)?;
+    let driver = Arc::new(BtDriver::<Ble>::new(modem, Some(partition.clone()))?);
+    let gap = EspBleGap::new(driver.clone())?;
+    let mut bluetooth = bluetooth::Manager::new(driver, partition)?;
+    gap.set_security_conf(&esp_idf_svc::bt::ble::gap::SecurityConfiguration {
+        auth_req_mode: esp_idf_svc::bt::ble::gap::AuthenticationRequest::Bonding,
+        io_capabilities: esp_idf_svc::bt::ble::gap::IOCapabilities::NoInputNoOutput,
+        max_key_size: Some(16),
+        ..Default::default()
+    })?;
     let mut clock = mibeacon::Decoder::new();
     shared.lock().unwrap().clock.configured = clock.configured();
     let (sender, receiver) = mpsc::sync_channel(32);
     let dropped = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let callback_dropped = dropped.clone();
     let (control_tx, control_rx) = mpsc::channel();
-    gap.subscribe(move |event| match event {
-        BleGapEvent::ScanParameterConfigured(status) => {
-            let _ = control_tx.send((false, status));
+    gap.subscribe(move |event| {
+        if let BleGapEvent::ScanResult(GapSearchEvent::InquiryResult(result)) = &event {
+            bluetooth::observe(
+                result.bda.addr(),
+                result.rssi,
+                result.ble_adv.unwrap_or(&[]),
+            );
         }
-        BleGapEvent::ScanStarted(status) => {
-            let _ = control_tx.send((true, status));
-        }
-        BleGapEvent::ScanResult(GapSearchEvent::InquiryResult(result))
-            if result.bda.addr() == MAC =>
-        {
-            if let Some(reading) = result.ble_adv.and_then(protocol::advertisement) {
-                if sender
-                    .try_send(Advertisement::Scale(reading, result.rssi, Instant::now()))
-                    .is_err()
-                {
-                    callback_dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        match event {
+            BleGapEvent::AuthenticationComplete { bd_addr, status } => {
+                bluetooth::auth(bd_addr.addr(), status == BtStatus::Success);
+            }
+            BleGapEvent::ScanStopped(status) => { log::info!("BLE scan stopped: {status:?}"); }
+            BleGapEvent::ScanParameterConfigured(status) => {
+                let _ = control_tx.send((false, status));
+            }
+            BleGapEvent::ScanStarted(status) => {
+                let _ = control_tx.send((true, status));
+            }
+            BleGapEvent::ScanResult(GapSearchEvent::InquiryResult(result))
+                if result.bda.addr() == MAC =>
+            {
+                if let Some(reading) = result.ble_adv.and_then(protocol::advertisement) {
+                    if sender
+                        .try_send(Advertisement::Scale(reading, result.rssi, Instant::now()))
+                        .is_err()
+                    {
+                        callback_dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
                 }
             }
-        }
-        BleGapEvent::ScanResult(GapSearchEvent::InquiryResult(result))
-            if result.bda.addr() == mibeacon::MAC =>
-        {
-            if let Some(adv) = result.ble_adv {
-                if sender.try_send(Advertisement::Clock(adv.to_vec())).is_err() {
-                    callback_dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            BleGapEvent::ScanResult(GapSearchEvent::InquiryResult(result))
+                if result.bda.addr() == mibeacon::MAC =>
+            {
+                if let Some(adv) = result.ble_adv {
+                    if sender.try_send(Advertisement::Clock(adv.to_vec())).is_err() {
+                        callback_dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
                 }
             }
+            _ => {}
         }
-        _ => {}
     })?;
     gap.set_scan_params(&ScanParams {
         scan_type: ScanType::Passive,
         scan_interval: 160, // 100ms
-        scan_window: 128,   // 80ms; coexistence scheduler shares airtime with Wi-Fi
+        scan_window: 32,    // 20ms; leave airtime for the two GATT links and Wi-Fi
         ..Default::default()
     })?;
     let (_, status) = control_rx.recv_timeout(Duration::from_secs(10))?;
@@ -149,6 +173,7 @@ fn run(
     let mut save_retry = Instant::now();
     let mut next_prune = Instant::now();
     loop {
+        bluetooth.tick(&gap);
         if Instant::now() >= next_prune {
             let mut state = shared.lock().unwrap();
             if history::retain_week(&mut state.history, crate::net::time::unix_secs()) {
@@ -177,7 +202,7 @@ fn run(
             }
             save_retry = Instant::now() + Duration::from_secs(5);
         }
-        let event = match receiver.recv_timeout(Duration::from_secs(1)) {
+        let event = match receiver.recv_timeout(Duration::from_millis(10)) {
             Ok(event) => event,
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(e) => return Err(e.into()),

@@ -1,4 +1,5 @@
 fn main() {
+    println!("cargo:rustc-link-arg=-Wl,--wrap=esp_bt_controller_init");
     let public_build = std::env::var("RLCD_PUBLIC_BUILD").as_deref() == Ok("1");
     println!("cargo:rerun-if-env-changed=RLCD_PUBLIC_BUILD");
     let revision = std::process::Command::new("git")

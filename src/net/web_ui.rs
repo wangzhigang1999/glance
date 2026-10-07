@@ -14,6 +14,7 @@ pub fn register(server: &mut EspHttpServer<'static>) -> Result<()> {
         ("/", "text/html; charset=utf-8", INDEX),
         ("/settings", "text/html; charset=utf-8", INDEX),
         ("/home", "text/html; charset=utf-8", INDEX),
+        ("/bluetooth", "text/html; charset=utf-8", INDEX),
         ("/system.html", "text/html; charset=utf-8", INDEX),
         ("/logs.html", "text/html; charset=utf-8", INDEX),
         ("/app.js", "text/javascript; charset=utf-8", JS),
